@@ -87,6 +87,21 @@ function aiDraftSchema_() {
   return { type: 'object', additionalProperties: false, required: req, properties: props };
 }
 
+var AI_SCORE_DIMS = ['inherent_impact', 'inherent_likelihood', 'residual_impact', 'residual_likelihood'];
+
+function aiScoreSchema_() {
+  var props = {}, req = [];
+  AI_SCORE_DIMS.forEach(function (k) {
+    props[k] = { type: 'integer' };
+    props[k + '_reason'] = { type: 'string' };
+    req.push(k, k + '_reason');
+  });
+  props.confidence = { type: 'string', enum: ['low', 'medium', 'high'] };
+  props.missing_info = { type: 'string' };
+  req.push('confidence', 'missing_info');
+  return { type: 'object', additionalProperties: false, required: req, properties: props };
+}
+
 var AI_IMPROVE_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['text', 'reason'],
   properties: { text: { type: 'string' }, reason: { type: 'string' } }
@@ -177,6 +192,18 @@ function riskDataText_(r, kris) {
  */
 function buildSuggestPrompt_(req, ctx) {
   var draft = normalizeRisk_(req.draft || {});
+  if (req.mode === 'score') {
+    if (!str_(draft.Risk_Scenario) && !str_(req.brief)) throw new Error('กรอก Risk Scenario ก่อน แล้ว AI จะแนะนำคะแนนให้');
+    return {
+      system: AI_SYSTEM_BASE + '\n\nงาน: แนะนำคะแนน Impact และ Likelihood (1-5) ของความเสี่ยงนี้ ทั้ง Inherent (ก่อนมีมาตรการควบคุม) และ Residual (หลังมีมาตรการที่ระบุใน Existing control)\n' +
+        '- เลือกระดับโดยเทียบกับนิยามระดับที่ให้เท่านั้น และให้เหตุผลที่อ้างถึงนิยามกับข้อมูลในความเสี่ยง (เขียนแบบใช้ใส่ช่อง Rationale ได้เลย)\n' +
+        '- Residual ต้องไม่สูงกว่า Inherent; ลดลงได้เฉพาะเมื่อ Existing control ที่ระบุลดผลกระทบ (Impact) หรือโอกาสเกิด (Likelihood) ได้จริง ถ้า control อ่อนหรือไม่มี ให้คงระดับเดิม\n' +
+        '- ถ้าผู้ใช้เลือกคะแนนไว้แล้ว ให้ประเมินอย่างอิสระ แล้วระบุในเหตุผลว่าเห็นต่างเพราะอะไร\n' +
+        '- confidence = ความมั่นใจตามความครบถ้วนของข้อมูล; missing_info = ข้อมูลที่ควรเพิ่มเพื่อให้ให้คะแนนแม่นขึ้น (เช่น สถิติการเกิด มูลค่าความเสียหาย)',
+      user: 'หน่วยงาน: ' + ctx.deptName + '\n\n' + scaleText_(ctx.scales) + '\n\n<data>\n' + riskDataText_(draft, req.kris) + '\n</data>',
+      schema: aiScoreSchema_(), schemaName: 'risk_score'
+    };
+  }
   if (req.mode === 'improve') {
     var f = req.field;
     if (RISK_INPUT_FIELDS.indexOf(f) < 0 || /_(Impact|Likelihood)$|Due_Date|Status|Owner/.test(f)) throw new Error('ช่องนี้ใช้ AI ปรับข้อความไม่ได้');
@@ -315,6 +342,32 @@ function validateSuggestion_(obj, taxonomy) {
   return { risk: risk, kris: kris, notes: notes };
 }
 
+/** คะแนนที่ AI แนะนำ → ฟิลด์ระบบ + คะแนน/ระดับ; Residual ที่สูงกว่า Inherent จะถูกปรับลงให้เท่า Inherent */
+function validateScoreSuggestion_(obj) {
+  if (!obj || typeof obj !== 'object') throw new Error('AI ไม่ได้ตอบเป็น JSON object');
+  var map = { inherent_impact: 'Inherent_Impact', inherent_likelihood: 'Inherent_Likelihood', residual_impact: 'Residual_Impact', residual_likelihood: 'Residual_Likelihood' };
+  var scores = {}, reasons = {}, notes = [];
+  AI_SCORE_DIMS.forEach(function (k) {
+    var lv = level_(obj[k]);
+    if (!lv) throw new Error('AI แนะนำระดับ ' + k + ' ไม่อยู่ในช่วง 1-5');
+    scores[map[k]] = lv;
+    reasons[map[k] + '_Rationale'] = str_(obj[k + '_reason']);
+  });
+  ['Impact', 'Likelihood'].forEach(function (d) {
+    if (scores['Residual_' + d] > scores['Inherent_' + d]) {
+      notes.push('AI ให้ Residual ' + d + ' สูงกว่า Inherent — ปรับเป็น ' + scores['Inherent_' + d] + ' ให้เท่ากัน');
+      scores['Residual_' + d] = scores['Inherent_' + d];
+    }
+  });
+  var is = scores.Inherent_Impact * scores.Inherent_Likelihood, rs = scores.Residual_Impact * scores.Residual_Likelihood;
+  return {
+    scores: scores, reasons: reasons,
+    inherent: { score: is, level: riskLevel_(is).key }, residual: { score: rs, level: riskLevel_(rs).key },
+    confidence: ['low', 'medium', 'high'].indexOf(obj.confidence) >= 0 ? obj.confidence : 'low',
+    missingInfo: str_(obj.missing_info), notes: notes
+  };
+}
+
 function validateRiskReview_(obj, criteria) {
   if (!obj || typeof obj !== 'object') throw new Error('AI ไม่ได้ตอบเป็น JSON object');
   var sc = scoreCriteria_(obj.criteria, criteria);
@@ -375,6 +428,12 @@ function aiSuggest_(u, req) {
   var res = AiProvider.callJson(buildSuggestPrompt_(req, ctx));
   if (req.mode === 'improve') {
     return { mode: 'improve', field: req.field, text: str_(res.data.text), reason: str_(res.data.reason), model: res.model };
+  }
+  if (req.mode === 'score') {
+    var sc = validateScoreSuggestion_(res.data);
+    sc.mode = 'score';
+    sc.model = res.model;
+    return sc;
   }
   var out = validateSuggestion_(res.data, ctx.taxonomy);
   out.mode = 'draft';

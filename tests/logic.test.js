@@ -163,3 +163,11 @@ test('legacyRowToRisk_ / riskToLegacyRow_ แปลงไป-กลับคอ�
   assert.equal(out[25], '• L1: < 5 %\n• G1: ok');
   assert.equal(out[27], '• L1: ≥ 10 %');
 });
+
+test('DEPARTMENT_SEED: 15 หน่วยงานตาม Risk report Log รหัสไม่ซ้ำและใช้ได้กับ apiSaveDept', () => {
+  assert.equal(G.DEPARTMENT_SEED.length, 15);
+  const codes = G.DEPARTMENT_SEED.map((d) => d[0]);
+  assert.equal(new Set(codes).size, 15);
+  codes.forEach((c) => assert.match(c, /^[A-Z0-9_]{2,12}$/));
+  assert.ok(G.DEPARTMENT_SEED.some((d) => d[1] === 'THAILAND PRIVILEGE CARD & IBD'));
+});

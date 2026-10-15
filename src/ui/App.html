@@ -472,6 +472,26 @@
       '</div>';
   }
 
+  var SCORE_FIELDS = ['Inherent_Impact', 'Inherent_Likelihood', 'Residual_Impact', 'Residual_Likelihood'];
+  var CONF_LABEL = { low: 'ต่ำ', medium: 'ปานกลาง', high: 'สูง' };
+  function scoreSuggestionHtml(sc) {
+    if (!sc) return '';
+    return '<div class="ai-panel" id="scorePanel"><h4>🎯 คะแนนที่ AI แนะนำ <span class="small muted">— ความมั่นใจ ' + esc(CONF_LABEL[sc.confidence] || sc.confidence) + '</span></h4>' +
+      '<div class="score-line">Inherent ' + lvBadge(sc.inherent.level, sc.inherent.score) + ' &nbsp; Residual ' + lvBadge(sc.residual.level, sc.residual.score) + '</div>' +
+      (sc.notes.length ? '<div class="warn-box">' + sc.notes.map(esc).join('\n') + '</div>' : '') +
+      '<div class="table-wrap"><table><thead><tr><th>มิติ</th><th>ที่เลือกไว้</th><th>AI แนะนำ</th><th>เหตุผล</th><th></th></tr></thead><tbody>' +
+      SCORE_FIELDS.map(function (f) {
+        var cur = form.risk[f], sug = sc.scores[f], dim = /Impact$/.test(f) ? 'Impact' : 'Likelihood';
+        var lab = function (v) { var s = INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(v); })[0]; return v ? v + (s ? ' (' + s.label + ')' : '') : '–'; };
+        var diff = cur && String(cur) !== String(sug);
+        return '<tr><td class="nowrap">' + esc(INIT.labels[f] || f) + '</td><td class="nowrap">' + esc(lab(cur)) + '</td><td class="nowrap"><b' + (diff ? ' style="color:var(--warn)"' : '') + '>' + esc(lab(sug)) + '</b></td>' +
+          '<td class="desc small">' + esc(sc.reasons[f + '_Rationale']) + '</td><td>' + (form.canEdit ? '<button type="button" class="linkbtn" data-usescore="' + f + '">ใช้</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      (sc.missingInfo ? '<div class="small" style="margin-top:6px"><b>ข้อมูลที่ควรเพิ่มเพื่อให้คะแนนแม่นขึ้น:</b> ' + esc(sc.missingInfo) + '</div>' : '') +
+      '<div class="section-actions">' + (form.canEdit ? '<button type="button" class="btn" data-useallscore="1">ใช้คะแนนและเหตุผลทั้งหมด</button>' : '') +
+      '<button type="button" class="btn ghost" data-closescore="1">ปิด</button><span class="small muted">"ใช้" = ใส่ระดับและเหตุผลลงช่อง Rationale (แก้ต่อได้)</span></div></div>';
+  }
+
   function suggestionHtml(sg) {
     if (!sg) return '';
     var fields = Object.keys(sg.risk).filter(function (f) { return sg.risk[f] !== '' && sg.risk[f] !== null; });
@@ -521,6 +541,11 @@
       '<div class="f"><label>Risk Sub-type</label><select data-f="Risk_Subtype"' + dis + '>' + subtypeOptions(r.Risk_Type, r.Risk_Subtype) + '</select></div></div>' +
       '<div class="hint-box' + (tax && tax.desc ? '' : ' hidden') + '" id="taxHint">' + esc(tax ? tax.desc : '') + '</div>' +
       fieldHtml('Risk_Scenario', 'textarea') + fieldHtml('Risk_Cause', 'textarea') + fieldHtml('Consequences', 'textarea') + '</fieldset>';
+    if (INIT.cfg.aiEnabled && (form.canEdit || form.scoreSuggestion)) {
+      html += '<div class="section-actions" id="scoreBar">' + (form.canEdit ? '<button type="button" class="btn ghost" id="btnAiScore">🎯 AI แนะนำคะแนน</button>' : '') +
+        '<span class="small muted">AI เทียบเนื้อหากับนิยามระดับ แล้วแนะนำ Impact / Likelihood ทั้ง Inherent และ Residual พร้อมเหตุผล</span></div>';
+    }
+    html += scoreSuggestionHtml(form.scoreSuggestion);
     html += '<fieldset><legend>2. Inherent risk (ก่อนมีมาตรการควบคุม)</legend><div class="row2">' +
       '<div>' + fieldHtml('Inherent_Impact', 'select', levelOptions('Impact', r.Inherent_Impact)) + '<div class="hint-box" id="hint-Inherent_Impact">' + esc(scaleText('Impact', r.Inherent_Impact) || 'ระดับความรุนแรงของผลกระทบ หากเกิดขึ้นโดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
       '<div>' + fieldHtml('Inherent_Likelihood', 'select', levelOptions('Likelihood', r.Inherent_Likelihood)) + '<div class="hint-box" id="hint-Inherent_Likelihood">' + esc(scaleText('Likelihood', r.Inherent_Likelihood) || 'โอกาส/ความถี่ที่จะเกิด โดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
@@ -617,6 +642,20 @@
         return;
       }
       if (t.dataset.closesugg) { collectForm(); form.suggestion = null; rerenderKeepScroll(); return; }
+      if (t.dataset.usescore || t.dataset.useallscore) {
+        collectForm();
+        var sc = form.scoreSuggestion;
+        (t.dataset.useallscore ? SCORE_FIELDS : [t.dataset.usescore]).forEach(function (f) {
+          form.risk[f] = sc.scores[f];
+          if (sc.reasons[f + '_Rationale']) form.risk[f + '_Rationale'] = sc.reasons[f + '_Rationale'];
+        });
+        if (t.dataset.useallscore) form.scoreSuggestion = null;
+        form.dirty = true;
+        rerenderKeepScroll();
+        if (t.dataset.useallscore) toast('ใส่คะแนนจาก AI แล้ว — ตรวจทานเหตุผลก่อนบันทึก');
+        return;
+      }
+      if (t.dataset.closescore) { collectForm(); form.scoreSuggestion = null; rerenderKeepScroll(); return; }
     };
     if ($('btnAddKri')) $('btnAddKri').onclick = function () {
       collectForm();
@@ -630,6 +669,7 @@
     if ($('btnClose')) $('btnClose').onclick = toggleClose;
     if ($('btnAiDraft')) $('btnAiDraft').onclick = function () { $('draftBox').classList.toggle('hidden'); if (!$('draftBox').classList.contains('hidden')) $('draftBrief').focus(); $('drawerBody').scrollTop = 0; };
     if ($('btnDraftGo')) $('btnDraftGo').onclick = aiDraft;
+    if ($('btnAiScore')) $('btnAiScore').onclick = aiScore;
   }
 
   function rerenderKeepScroll() {
@@ -648,6 +688,19 @@
       busy(btn, false);
       form.suggestion = s;
       renderRiskForm();
+    }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
+  }
+
+  function aiScore() {
+    collectForm();
+    var btn = $('btnAiScore');
+    if (!String(form.risk.Risk_Scenario || '').trim()) return toast('กรอก Risk Scenario (และควรมี Cause / Consequences / Existing control) ก่อน');
+    busy(btn, true, 'AI กำลังประเมินคะแนน…');
+    call('apiAiSuggest', [{ mode: 'score', dept: form.dept, draft: form.risk, kris: form.kris }]).then(function (s) {
+      busy(btn, false);
+      form.scoreSuggestion = s;
+      rerenderKeepScroll();
+      $('scorePanel').scrollIntoView({ block: 'start' });
     }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
   }
 

@@ -123,3 +123,31 @@ test('buildKriCommentPrompt_', () => {
   assert.match(p.user, /Action taken\): \(ว่าง\)/);
   assert.equal(p.schemaName, 'kri_comment_review');
 });
+
+test('AI แนะนำคะแนน: prompt ใช้นิยามระดับ และต้องมี Scenario', () => {
+  const p = G.buildSuggestPrompt_({ mode: 'score', draft: { Risk_Scenario: 'จอดับ', Existing_Control: 'แจ้งเตือนอัตโนมัติ', Inherent_Impact: 2 } }, CTX);
+  assert.equal(p.schemaName, 'risk_score');
+  assert.match(p.user, /นิยามระดับ Impact/);
+  assert.match(p.user, /แจ้งเตือนอัตโนมัติ/);
+  assert.match(p.system, /Residual ต้องไม่สูงกว่า Inherent/);
+  assert.deepEqual(Object.keys(p.schema.properties).sort(), plain(p.schema.required).sort());
+  assert.throws(() => G.buildSuggestPrompt_({ mode: 'score', draft: {} }, CTX), /Risk Scenario/);
+});
+
+test('validateScoreSuggestion_: คิดระดับ, ปรับ Residual ที่สูงกว่า Inherent, ปฏิเสธระดับนอกช่วง', () => {
+  const ok = {
+    inherent_impact: 4, inherent_impact_reason: 'ir', inherent_likelihood: 4, inherent_likelihood_reason: 'il',
+    residual_impact: 3, residual_impact_reason: 'rr', residual_likelihood: 5, residual_likelihood_reason: 'rl',
+    confidence: 'medium', missing_info: 'สถิติ'
+  };
+  const s = G.validateScoreSuggestion_(ok);
+  assert.equal(s.scores.Inherent_Impact, 4);
+  assert.equal(s.scores.Residual_Likelihood, 4);           // 5 > 4 → ปรับลง
+  assert.match(s.notes.join(), /Likelihood/);
+  assert.deepEqual(plain(s.inherent), { score: 16, level: 'High' });
+  assert.deepEqual(plain(s.residual), { score: 12, level: 'High' });
+  assert.equal(s.reasons.Inherent_Impact_Rationale, 'ir');
+  assert.equal(s.confidence, 'medium');
+  assert.equal(G.validateScoreSuggestion_(Object.assign({}, ok, { confidence: 'sure' })).confidence, 'low');
+  assert.throws(() => G.validateScoreSuggestion_(Object.assign({}, ok, { inherent_impact: 6 })), /1-5/);
+});

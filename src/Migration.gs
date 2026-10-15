@@ -42,6 +42,9 @@ function setup() {
   if (!Db.readAll('Users').length && me) {
     Db.append('Users', [{ Email: me, Name: me.split('@')[0], Role: 'ADMIN', Departments: '*', Is_Active: 'TRUE', Note: 'สร้างโดย setup()' }]);
   }
+  if (!Db.readAll('Departments').length) {
+    Db.append('Departments', DEPARTMENT_SEED.map(function (d) { return { Dept_Code: d[0], Dept_Name: d[1], Approver_Email: '', Is_Active: 'TRUE' }; }));
+  }
   if (!Db.readAll('Scale_Definitions').length) {
     Db.append('Scale_Definitions', scaleSeed_().map(function (r) { return { Dimension: r[0], Level: r[1], Label: r[2], Description: r[3] }; }));
   }
@@ -60,7 +63,7 @@ function setup() {
   try { copyReferenceSheets_(ss, cfg.TEMPLATE_ID); } catch (e) { console.warn('คัดลอกชีตอ้างอิงไม่ได้: ' + e.message); }
   installTriggers_();
   console.log('DB: ' + ss.getUrl());
-  console.log('ขั้นต่อไป: เพิ่มแผนกในชีต Departments / ผู้ใช้ในชีต Users (หรือในหน้า ตั้งค่า ของ Web App) แล้ว Deploy เป็น Web app');
+  console.log('ขั้นต่อไป: ตรวจรายชื่อแผนกในชีต Departments (ใส่ไว้ 15 หน่วยงาน) เติมอีเมลผู้อนุมัติ / เพิ่มผู้ใช้ในชีต Users (หรือในหน้า ตั้งค่า ของ Web App) แล้ว Deploy เป็น Web app');
 }
 
 function ensureSheet_(ss, name, cols) {
@@ -140,9 +143,10 @@ function importLegacyRegister_(sheetId, defaultPeriod, email) {
   return Db.withLock(function () {
     var depts = Db.readAll('Departments');
     var codes = depts.map(function (d) { return str_(d.Dept_Code).toUpperCase(); });
+    var norm = function (s) { return str_(s).toUpperCase().replace(/&AMP;/g, '&').replace(/[^A-Z0-9ก-๙]/g, ''); };
     var findDept = function (bu) {
-      var key = bu.toUpperCase();
-      var d = depts.filter(function (x) { return str_(x.Dept_Code).toUpperCase() === key || str_(x.Dept_Name).toUpperCase() === key; })[0];
+      var key = norm(bu);
+      var d = depts.filter(function (x) { return norm(x.Dept_Code) === key || norm(x.Dept_Name) === key; })[0];
       return d ? str_(d.Dept_Code).toUpperCase() : null;
     };
     var riskIds = Db.readAll('Risks').map(function (r) { return r.Risk_ID; });

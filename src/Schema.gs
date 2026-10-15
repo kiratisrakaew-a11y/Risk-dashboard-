@@ -71,6 +71,25 @@ var RISK_LEVELS = [
   { key: 'Very High', name: 'Very High Risk', min: 20, max: 25, mitigation: 'Additional Mitigation required', reporting: 'RMC & BOD' }
 ];
 
+/** หน่วยงานตาม "Risk report Log" (15 หน่วยงาน) — setup() ใส่ให้ถ้าชีต Departments ยังว่าง; อีเมลผู้อนุมัติ ADMIN เติมภายหลัง */
+var DEPARTMENT_SEED = [
+  ['DM', 'Digital Media'],
+  ['BBP', 'Billboard Production'],
+  ['VM', 'Value Management'],
+  ['AIR711', 'Airport & Seven-Eleven Media'],
+  ['STBUS', 'Street-Bus'],
+  ['OI', 'Operation Intelligence'],
+  ['STOPS', 'Street - Operation Support'],
+  ['PMKT', 'Performance Marketing'],
+  ['LEGAL', 'Legal'],
+  ['SALES', 'Sales'],
+  ['PUR', 'Purchasing'],
+  ['PEOPLE', 'People'],
+  ['SBTAX', 'Signboard Tax'],
+  ['TPCIBD', 'THAILAND PRIVILEGE CARD & IBD'],
+  ['STSTAT', 'Street Static']
+];
+
 var LEVEL_LABELS = { 1: 'ต่ำมาก', 2: 'ต่ำ', 3: 'ปานกลาง', 4: 'สูง', 5: 'สูงมาก' };
 
 /** คำอธิบายระดับตั้งต้น — ADMIN ควรแก้ในชีต Scale_Definitions ให้ตรงกับชีต "Impact & Likelihood" ของบริษัท */
