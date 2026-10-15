@@ -1,0 +1,1085 @@
+<script>
+(function () {
+  'use strict';
+  var INIT = null;                 // ข้อมูลเริ่มต้น (ผู้ใช้, แผนก, taxonomy, นิยามระดับ)
+  var state = { dept: '', period: '', tab: 'dashboard' };
+  var cache = {};                  // ผลจาก API ต่อแท็บ (ล้างเมื่อเปลี่ยนแผนก/งวด/บันทึก)
+  var charts = {};
+  var regFilter = { q: '', level: '', type: '', status: 'Active' };
+  var kriMonth = '';
+  var kriDept = '';
+  var form = null;                 // ฟอร์ม Risk ที่เปิดอยู่ { risk, kris, canEdit, isNew, dept, review, suggestion }
+
+  var IMPROVABLE = ['Risk_Scenario', 'Risk_Cause', 'Consequences', 'Inherent_Impact_Rationale', 'Inherent_Likelihood_Rationale',
+    'Existing_Control', 'Residual_Impact_Rationale', 'Residual_Likelihood_Rationale', 'Mitigation_Plan'];
+  var DIR_LABEL = { Higher_Worse: 'ค่ามากยิ่งแย่', Lower_Worse: 'ค่าน้อยยิ่งแย่', Qualitative: 'เชิงคุณภาพ (เลือกสถานะเอง)' };
+  var FREQ_LABEL = { Monthly: 'รายเดือน', Quarterly: 'รายไตรมาส' };
+  var APPROVAL_LABEL = { Draft: 'ร่าง', Submitted: 'รออนุมัติ', Approved: 'อนุมัติแล้ว', Returned: 'ส่งกลับแก้ไข' };
+
+  // ---------------- helpers ----------------
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmt(n, d) {
+    if (n === null || n === undefined || n === '' || isNaN(n)) return '–';
+    return Number(n).toLocaleString('th-TH', { maximumFractionDigits: d === undefined ? 2 : d });
+  }
+  function call(fn, args) {
+    return new Promise(function (resolve, reject) {
+      var r = google.script.run.withSuccessHandler(function (x) {
+        try { resolve(typeof x === 'string' ? JSON.parse(x) : x); } catch (e) { reject(e); }
+      }).withFailureHandler(reject);
+      r[fn].apply(r, args || []);
+    });
+  }
+  function errMsg(e) { return String(e && e.message || e).replace(/^Error:\s*/, '').replace(/^Exception:\s*/, ''); }
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.classList.add('hidden'); }, 4000);
+  }
+  function busy(btn, on, text) {
+    if (!btn) return;
+    if (on) { btn._t = btn.innerHTML; btn.disabled = true; if (text) btn.textContent = text; }
+    else { btn.disabled = false; if (btn._t !== undefined) btn.innerHTML = btn._t; }
+  }
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function chart(id, cfg) {
+    if (charts[id]) charts[id].destroy();
+    var el = $(id); if (!el || !window.Chart) return;
+    Chart.defaults.color = cssVar('--muted');
+    Chart.defaults.borderColor = cssVar('--border');
+    Chart.defaults.font.family = "'IBM Plex Sans Thai', system-ui, sans-serif";
+    charts[id] = new Chart(el, cfg);
+  }
+  function levelOf(score) {
+    if (!score) return null;
+    for (var i = 0; i < INIT.levels.length; i++) if (score >= INIT.levels[i].min && score <= INIT.levels[i].max) return INIT.levels[i];
+    return null;
+  }
+  function levelColor(key) {
+    return cssVar({ 'Low': '--lv-low', 'Moderate': '--lv-mod', 'High': '--lv-high', 'Very High': '--lv-vhigh' }[key] || '--border');
+  }
+  function lvBadge(key, score) {
+    if (!key) return '<span class="badge">–</span>';
+    return '<span class="lv lv-' + esc(String(key).replace(/\s+/g, '-')) + '">' + esc(key) + (score ? ' · ' + esc(score) : '') + '</span>';
+  }
+  function rag(s, text) { return s ? '<span class="rag ' + esc(s) + '">' + esc(text || s) + '</span>' : '<span class="badge">ยังไม่มีค่า</span>'; }
+  function gradeBadge(score, grade, stale) {
+    if (score === null || score === undefined || score === '') return '<span class="badge">ยังไม่ตรวจ</span>';
+    var cls = score >= INIT.cfg.SCORE_THRESHOLD ? 'good' : score >= 50 ? 'warn' : 'bad';
+    return '<span class="badge ' + cls + '"' + (stale ? ' title="แก้ไขหลังตรวจ — รอตรวจใหม่"' : '') + '>' + esc(grade) + ' · ' + esc(score) + (stale ? ' *' : '') + '</span>';
+  }
+  function approvalBadge(s) {
+    var cls = { Approved: 'good', Submitted: 'info', Returned: 'bad' }[s] || '';
+    return '<span class="badge ' + cls + '">' + esc(APPROVAL_LABEL[s] || s || 'ร่าง') + '</span>';
+  }
+  function deptName(code) {
+    var d = INIT.depts.filter(function (x) { return x.code === code; })[0];
+    return d ? d.name : code;
+  }
+  function deptInfo(code) { return INIT.depts.filter(function (x) { return x.code === code; })[0] || {}; }
+  function editableDepts() { return INIT.depts.filter(function (d) { return d.canEdit; }); }
+  function kpi(label, value, hint, cls, go) {
+    return '<div class="card kpi ' + (cls || '') + (go ? ' clickable" data-goto="' + go : '') + '">' +
+      (go ? '<span class="kpi-go" aria-hidden="true">↗</span>' : '') +
+      '<div class="label">' + esc(label) + '</div><div class="value">' + value + '</div>' +
+      (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+  }
+  function scaleText(dim, level) {
+    var s = INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(level); })[0];
+    return s ? s.desc : '';
+  }
+  function thai(d) { return d ? String(d).slice(0, 10) : '–'; }
+  function sortable(tableEl) {
+    if (!tableEl) return;
+    var ths = tableEl.querySelectorAll('th');
+    Array.prototype.forEach.call(ths, function (th, i) {
+      th.addEventListener('click', function () {
+        var dir = th.classList.contains('sort-asc') ? -1 : 1;
+        Array.prototype.forEach.call(ths, function (x) { x.classList.remove('sort-asc', 'sort-desc'); });
+        th.classList.add(dir === 1 ? 'sort-asc' : 'sort-desc');
+        var body = tableEl.tBodies[0];
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (a, b) {
+          var x = a.cells[i] ? (a.cells[i].getAttribute('data-v') || a.cells[i].textContent) : '';
+          var y = b.cells[i] ? (b.cells[i].getAttribute('data-v') || b.cells[i].textContent) : '';
+          var nx = parseFloat(x), ny = parseFloat(y);
+          if (!isNaN(nx) && !isNaN(ny)) return (nx - ny) * dir;
+          return String(x).localeCompare(String(y), 'th') * dir;
+        });
+        rows.forEach(function (r) { body.appendChild(r); });
+      });
+    });
+  }
+
+  // ---------------- drawer ----------------
+  function openDrawer(title, html, actions, wide) {
+    $('drawerTitle').innerHTML = title;
+    $('drawerActions').innerHTML = actions || '';
+    $('drawerBody').innerHTML = html;
+    $('drawer').classList.toggle('wide', !!wide);
+    $('drawer').classList.remove('hidden');
+    $('scrim').classList.remove('hidden');
+    $('drawerBody').scrollTop = 0;
+  }
+  function closeDrawer() {
+    $('drawer').classList.add('hidden');
+    $('scrim').classList.add('hidden');
+    form = null;
+  }
+
+  // ---------------- init ----------------
+  function start() {
+    call('apiInit').then(function (d) {
+      INIT = d;
+      $('subtitle').textContent = d.user.name + ' · ' + d.user.role + (d.depts.length === 1 ? ' · ' + d.depts[0].name : '');
+      if (d.user.isAdmin) $('tabSettings').classList.remove('hidden');
+      var sel = $('selDept');
+      var opts = d.depts.length > 1 ? '<option value="">ทุกแผนกที่มีสิทธิ์ (' + d.depts.length + ')</option>' : '';
+      sel.innerHTML = opts + d.depts.map(function (x) { return '<option value="' + esc(x.code) + '">' + esc(x.code + ' · ' + x.name) + '</option>'; }).join('');
+      state.dept = d.depts.length === 1 ? d.depts[0].code : '';
+      sel.value = state.dept;
+      if (!d.depts.length) sel.innerHTML = '<option value="">(ยังไม่มีแผนก)</option>';
+      $('selPeriod').innerHTML = d.periods.map(function (p) {
+        return '<option value="' + esc(p) + '">งวด ' + esc(p) + (p === d.cfg.ASSESSMENT_PERIOD ? ' (ปัจจุบัน)' : '') + '</option>';
+      }).join('');
+      state.period = d.cfg.ASSESSMENT_PERIOD;
+      $('selPeriod').value = state.period;
+      kriMonth = monthBefore(d.today);
+      $('loading').classList.add('hidden');
+      showTab(state.tab);
+    }).catch(fatal);
+  }
+  function fatal(e) {
+    $('loading').classList.add('hidden');
+    $('error').textContent = errMsg(e);
+    $('error').classList.remove('hidden');
+  }
+  function monthBefore(iso) {
+    var y = Number(iso.slice(0, 4)), m = Number(iso.slice(5, 7)) - 1;
+    if (m === 0) { y--; m = 12; }
+    return y + '-' + ('0' + m).slice(-2);
+  }
+  function invalidate() { cache = {}; }
+
+  function showTab(tab) {
+    state.tab = tab;
+    Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (s) { s.classList.toggle('hidden', s.id !== 'tab-' + tab); });
+    $('error').classList.add('hidden');
+    ({ dashboard: loadDashboard, register: loadRegister, kri: loadKri, approval: loadApproval, ai: loadAi, settings: loadSettings }[tab])();
+  }
+  function loadingInto(el) { el.innerHTML = '<div class="loading"><div class="spinner"></div>กำลังโหลด…</div>'; }
+
+  // ============================ Dashboard ============================
+  function loadDashboard() {
+    var el = $('tab-dashboard');
+    var key = 'dash:' + state.dept + ':' + state.period;
+    if (cache[key]) return renderDashboard(cache[key]);
+    loadingInto(el);
+    call('apiGetDashboard', [state.dept, state.period]).then(function (d) { cache[key] = d; renderDashboard(d); })
+      .catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function heatHtml(h, id) {
+    var rows = '';
+    for (var l = 5; l >= 1; l--) {
+      rows += '<div class="ax">' + l + '</div>';
+      for (var i = 1; i <= 5; i++) {
+        var ids = h[l - 1][i - 1], s = l * i, lv = levelOf(s);
+        rows += '<div class="cell' + (ids.length ? ' has' : '') + '" style="background:' + levelColor(lv.key) + '" data-heat="' + id + ':' + l + ':' + i + '" title="Impact ' + i + ' × Likelihood ' + l + ' = ' + s + ' (' + lv.key + ')' + (ids.length ? '\n' + ids.join(', ') : '') + '">' + (ids.length || '') + '</div>';
+      }
+    }
+    rows += '<div></div>';
+    for (var x = 1; x <= 5; x++) rows += '<div class="ax">' + x + '</div>';
+    return '<div class="heat">' + rows + '</div><div class="heat-caption"><span>↑ Likelihood (โอกาสเกิด)</span><span>Impact (ความรุนแรง) →</span></div>';
+  }
+
+  function renderDashboard(d) {
+    var el = $('tab-dashboard');
+    var k = d.kpi;
+    $('kriPill').textContent = k.kriOverdue || '';
+    var multi = d.depts.length > 1;
+    var html = '<div class="section-actions"><span class="muted small">งวดประเมิน ' + esc(d.period) + ' · ' +
+      (multi ? d.depts.length + ' แผนก' : esc(deptName(d.depts[0] || ''))) + ' · ข้อมูล ณ ' + esc(d.today) + '</span></div>';
+    html += '<div class="grid kpis">' +
+      kpi('ความเสี่ยงทั้งหมด', k.risks, INIT.levels.map(function (l) { return l.key + ' ' + (k.byResidual[l.key] || 0); }).join(' · '), '', 'register') +
+      kpi('High / Very High (Residual)', k.highPlus, 'ต้องมีมาตรการเพิ่มเติม', k.highPlus ? 'bad' : 'good', 'register') +
+      kpi('KRI ระดับ Red', k.kriRed, 'Amber ' + k.kriAmber + ' · Green ' + k.kriGreen + ' · ไม่มีค่า ' + k.kriNoStatus, k.kriRed ? 'bad' : 'good') +
+      kpi('KRI ค้างกรอก', k.kriMissing, 'เลยกำหนดแล้ว ' + k.kriOverdue, k.kriOverdue ? 'bad' : k.kriMissing ? 'warn' : 'good', 'kri') +
+      kpi('แผนลดความเสี่ยงเลยกำหนด', k.mitOverdue, 'ใกล้ครบกำหนด ' + k.mitDueSoon + ' · ยังไม่เสร็จ ' + k.mitOpen, k.mitOverdue ? 'bad' : k.mitDueSoon ? 'warn' : 'good') +
+      kpi('คะแนนคุณภาพการเขียน (AI)', k.aiAvg === null ? '–' : k.aiAvg, 'ตรวจแล้ว ' + k.aiReviewed + '/' + k.risks + ' · ต่ำกว่าเกณฑ์ ' + k.aiLow, k.aiAvg === null ? '' : k.aiAvg >= INIT.cfg.SCORE_THRESHOLD ? 'good' : 'warn', 'ai') +
+      '</div>';
+    html += '<div class="grid cols-2" style="margin-top:12px">' +
+      '<div class="card"><h3>Heat map — Inherent risk</h3>' + heatHtml(d.heat.inherent, 'inherent') + '</div>' +
+      '<div class="card"><h3>Heat map — Residual risk</h3>' + heatHtml(d.heat.residual, 'residual') + '</div>' +
+      '</div>';
+    html += '<div class="grid cols-2" style="margin-top:12px">' +
+      '<div class="card"><h3>ระดับความเสี่ยงตามประเภท (Residual)</h3><div class="chart-box"><canvas id="chType"></canvas></div></div>' +
+      '<div class="card"><h3>แนวโน้มสถานะ KRI 6 เดือน</h3><div class="chart-box"><canvas id="chTrend"></canvas></div></div>' +
+      '</div>';
+    if (multi) {
+      html += '<h2>สรุปรายแผนก</h2><div class="card table-wrap"><table id="tblDept"><thead><tr><th>แผนก</th><th class="num">Risk</th><th class="num">High+</th><th class="num">KRI Red</th><th class="num">KRI Amber</th><th class="num">ค้างกรอก</th><th class="num">เลยกำหนด</th><th class="num">แผนเลยกำหนด</th><th class="num">AI</th><th>สถานะอนุมัติ</th></tr></thead><tbody>' +
+        d.byDept.map(function (x) {
+          return '<tr class="clickable" data-dept="' + esc(x.code) + '"><td><b>' + esc(x.code) + '</b> ' + esc(x.name) + '</td><td class="num">' + x.risks + '</td><td class="num">' + x.highPlus +
+            '</td><td class="num">' + (x.red ? '<b style="color:var(--bad)">' + x.red + '</b>' : 0) + '</td><td class="num">' + x.amber + '</td><td class="num">' + x.missing +
+            '</td><td class="num">' + (x.overdue ? '<b style="color:var(--bad)">' + x.overdue + '</b>' : 0) + '</td><td class="num">' + x.mitOverdue + '</td><td class="num" data-v="' + (x.aiAvg === null ? -1 : x.aiAvg) + '">' + (x.aiAvg === null ? '–' : x.aiAvg) +
+            '</td><td>' + approvalBadge(x.approval) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    html += '<h2>Top risks (Residual)</h2><div class="card table-wrap"><table id="tblTop"><thead><tr><th>Risk ID</th>' + (multi ? '<th>แผนก</th>' : '') + '<th>ความเสี่ยง</th><th>Inherent</th><th>Residual</th><th>KRI</th><th>แผน</th><th>AI</th></tr></thead><tbody>' +
+      (d.topRisks.length ? d.topRisks.map(function (r) {
+        return '<tr class="clickable" data-risk="' + esc(r.Risk_ID) + '"><td class="nowrap">' + esc(r.Risk_ID) + '</td>' + (multi ? '<td>' + esc(r.dept) + '</td>' : '') +
+          '<td class="desc">' + esc(r.scenario) + '<div class="muted small">' + esc(r.type) + ' › ' + esc(r.subtype) + '</div></td>' +
+          '<td data-v="' + (r.inherentScore || 0) + '">' + lvBadge(r.inherentLevel, r.inherentScore) + '</td><td data-v="' + (r.residualScore || 0) + '">' + lvBadge(r.residualLevel, r.residualScore) +
+          '</td><td>' + rag(r.kriStatus) + '</td><td class="small">' + esc(r.mitigationStatus || '–') + (r.due ? '<div class="muted">' + esc(r.due) + '</div>' : '') +
+          '</td><td data-v="' + (r.aiScore === null ? -1 : r.aiScore) + '">' + gradeBadge(r.aiScore, r.aiGrade) + '</td></tr>';
+      }).join('') : '<tr><td colspan="8" class="muted">ยังไม่มีความเสี่ยงในงวดนี้</td></tr>') + '</tbody></table></div>';
+    html += '<h2>สถานะ KRI</h2><div class="card table-wrap"><table id="tblKri"><thead><tr>' + (multi ? '<th>แผนก</th>' : '') + '<th>KRI</th><th>ประเภท</th><th>งวด</th><th class="num">ค่า</th><th>สถานะ</th><th>งวดก่อน</th><th>กำหนดกรอก</th><th>เกณฑ์ Red</th></tr></thead><tbody>' +
+      (d.kriRows.length ? d.kriRows.slice().sort(function (a, b) {
+        var r = { Red: 0, Amber: 1, Green: 2 };
+        return ((r[a.snapshot.status || a.snapshot.lastStatus] === undefined ? 3 : r[a.snapshot.status || a.snapshot.lastStatus]) - (r[b.snapshot.status || b.snapshot.lastStatus] === undefined ? 3 : r[b.snapshot.status || b.snapshot.lastStatus])) || (b.snapshot.overdue - a.snapshot.overdue);
+      }).map(function (x) {
+        var s = x.snapshot;
+        return '<tr class="clickable" data-kri="' + esc(x.KRI_ID) + '">' + (multi ? '<td>' + esc(x.dept) + '</td>' : '') +
+          '<td>' + esc(x.name) + '<div class="muted small">' + esc(x.Risk_ID) + '</div></td><td class="small">' + esc(x.type) + '<br>' + esc(FREQ_LABEL[x.frequency] || x.frequency) +
+          '</td><td class="nowrap">' + esc(s.period) + '</td><td class="num">' + (s.missing ? '–' : esc(fmt(s.value)) + ' ' + esc(x.unit || '')) +
+          '</td><td>' + (s.missing ? (s.overdue ? '<span class="badge bad">เลยกำหนด</span>' : '<span class="badge warn">รอกรอก</span>') + (s.lastStatus ? '<div class="small muted">ล่าสุด ' + rag(s.lastStatus, s.lastStatus + ' (' + s.lastPeriod + ')') + '</div>' : '') : rag(s.status)) +
+          '</td><td>' + (s.prevStatus ? rag(s.prevStatus) : '–') + '</td><td class="nowrap">' + esc(s.due) + '</td><td class="small">' + esc(x.thresholds.Red || '–') + '</td></tr>';
+      }).join('') : '<tr><td colspan="9" class="muted">ยังไม่มี KRI</td></tr>') + '</tbody></table></div>';
+    html += '<h2>แผนลดความเสี่ยงที่ยังไม่เสร็จ</h2><div class="card table-wrap"><table id="tblMit"><thead><tr><th>Risk ID</th>' + (multi ? '<th>แผนก</th>' : '') + '<th>แผน</th><th>ระดับ</th><th>สถานะ</th><th>กำหนดเสร็จ</th><th class="num">เหลือ (วัน)</th></tr></thead><tbody>' +
+      (d.mitigation.length ? d.mitigation.map(function (m) {
+        return '<tr class="clickable" data-risk="' + esc(m.Risk_ID) + '"><td class="nowrap">' + esc(m.Risk_ID) + '</td>' + (multi ? '<td>' + esc(m.dept) + '</td>' : '') + '<td class="desc">' + esc(m.plan) +
+          '</td><td>' + lvBadge(m.level) + '</td><td>' + esc(m.status || '–') + '</td><td class="nowrap">' + esc(m.due || '–') + '</td><td class="num" data-v="' + (m.daysLeft === null ? 99999 : m.daysLeft) + '">' +
+          (m.daysLeft === null ? '–' : m.overdue ? '<b style="color:var(--bad)">' + m.daysLeft + '</b>' : m.daysLeft <= INIT.cfg.MITIGATION_WARN_DAYS ? '<b style="color:var(--warn)">' + m.daysLeft + '</b>' : m.daysLeft) + '</td></tr>';
+      }).join('') : '<tr><td colspan="7" class="muted">ไม่มีแผนค้าง</td></tr>') + '</tbody></table></div>';
+    el.innerHTML = html;
+    ['tblDept', 'tblTop', 'tblKri', 'tblMit'].forEach(function (id) { sortable($(id)); });
+
+    var types = d.byType.slice(0, 10);
+    chart('chType', {
+      type: 'bar',
+      data: { labels: types.map(function (t) { return t.type; }), datasets: INIT.levels.map(function (l) {
+        return { label: l.key, data: types.map(function (t) { return t[l.key] || 0; }), backgroundColor: levelColor(l.key) };
+      }) },
+      options: { indexAxis: 'y', maintainAspectRatio: false, scales: { x: { stacked: true, ticks: { precision: 0 } }, y: { stacked: true } }, plugins: { legend: { position: 'bottom' } } }
+    });
+    chart('chTrend', {
+      type: 'bar',
+      data: { labels: d.trend.periods, datasets: [['Green', '--lv-low'], ['Amber', '--lv-mod'], ['Red', '--lv-vhigh']].map(function (x) {
+        return { label: x[0], data: d.trend[x[0]], backgroundColor: cssVar(x[1]) };
+      }) },
+      options: { maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true, ticks: { precision: 0 } } }, plugins: { legend: { position: 'bottom' } } }
+    });
+
+    el.onclick = function (ev) {
+      var t = ev.target.closest('[data-goto],[data-heat],[data-risk],[data-kri],[data-dept]');
+      if (!t) return;
+      if (t.dataset.goto) return showTab(t.dataset.goto);
+      if (t.dataset.risk) return openRisk(t.dataset.risk);
+      if (t.dataset.kri) return openKriHistory(t.dataset.kri);
+      if (t.dataset.dept) { $('selDept').value = t.dataset.dept; state.dept = t.dataset.dept; return loadDashboard(); }
+      if (t.dataset.heat) {
+        var p = t.dataset.heat.split(':');
+        var ids = d.heat[p[0]][Number(p[1]) - 1][Number(p[2]) - 1];
+        if (!ids.length) return;
+        openDrawer(esc(p[0] === 'inherent' ? 'Inherent' : 'Residual') + ' · Impact ' + p[2] + ' × Likelihood ' + p[1],
+          '<div class="table-wrap"><table><tbody>' + ids.map(function (id) {
+            return '<tr class="clickable" data-open="' + esc(id) + '"><td class="nowrap">' + esc(id) + '</td><td>' + esc(d.riskNames[id] || '') + '</td></tr>';
+          }).join('') + '</tbody></table></div><p class="muted small">คลิกเพื่อเปิดรายละเอียด</p>');
+        $('drawerBody').onclick = function (e2) { var o = e2.target.closest('[data-open]'); if (o) openRisk(o.dataset.open); };
+      }
+    };
+  }
+
+  // ============================ Risk Register ============================
+  function loadRegister() {
+    var el = $('tab-register');
+    var key = 'reg:' + state.dept + ':' + state.period;
+    if (cache[key]) return renderRegister(cache[key]);
+    loadingInto(el);
+    call('apiListRisks', [state.dept, state.period]).then(function (d) { cache[key] = d; renderRegister(d); })
+      .catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function renderRegister(rows) {
+    var el = $('tab-register');
+    var multi = !state.dept;
+    var types = {};
+    rows.forEach(function (r) { if (r.Risk_Type) types[r.Risk_Type] = 1; });
+    var canAdd = editableDepts().length > 0 && state.period === INIT.cfg.ASSESSMENT_PERIOD;
+    var html = '<div class="filters">' +
+      '<input type="text" id="fQ" placeholder="ค้นหา Risk ID / คำอธิบาย…" value="' + esc(regFilter.q) + '" style="min-width:220px">' +
+      '<select id="fLevel"><option value="">ทุกระดับ (Residual)</option>' + INIT.levels.map(function (l) { return '<option' + (regFilter.level === l.key ? ' selected' : '') + '>' + esc(l.key) + '</option>'; }).join('') + '</select>' +
+      '<select id="fType"><option value="">ทุกประเภท</option>' + Object.keys(types).sort().map(function (t) { return '<option' + (regFilter.type === t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select>' +
+      '<select id="fStatus"><option value="Active"' + (regFilter.status === 'Active' ? ' selected' : '') + '>ใช้งานอยู่</option><option value="Closed"' + (regFilter.status === 'Closed' ? ' selected' : '') + '>ปิดแล้ว</option><option value=""' + (!regFilter.status ? ' selected' : '') + '>ทั้งหมด</option></select>' +
+      '<span style="flex:1"></span>' +
+      (canAdd ? '<button class="btn" id="btnAdd">+ เพิ่มความเสี่ยง</button>' : '') +
+      '<button class="btn ghost" id="btnExport" title="สร้าง Google Sheet ตามรูปแบบ RISK_REGISTER เดิม">⇩ Export</button></div>';
+    var list = rows.filter(function (r) {
+      if (regFilter.status && (r.Status || 'Active') !== regFilter.status) return false;
+      if (regFilter.level && r.Residual_Level !== regFilter.level) return false;
+      if (regFilter.type && r.Risk_Type !== regFilter.type) return false;
+      if (regFilter.q) {
+        var q = regFilter.q.toLowerCase();
+        if ((r.Risk_ID + ' ' + r.Risk_Scenario + ' ' + r.Risk_Cause + ' ' + r.Risk_Owner + ' ' + r.Risk_Subtype).toLowerCase().indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    html += '<div class="card table-wrap"><table id="tblReg"><thead><tr><th>Risk ID</th>' + (multi ? '<th>แผนก</th>' : '') +
+      '<th>ประเภท</th><th>ความเสี่ยง</th><th>Inherent</th><th>Residual</th><th>แผนลดความเสี่ยง</th><th>KRI</th><th>AI</th><th>แก้ไขล่าสุด</th></tr></thead><tbody>' +
+      (list.length ? list.map(function (r) {
+        return '<tr class="clickable" data-risk="' + esc(r.Risk_ID) + '"><td class="nowrap" data-v="' + esc(r.Risk_ID) + '">' + esc(r.Risk_ID) + (r.Status === 'Closed' ? '<div><span class="badge">ปิดแล้ว</span></div>' : '') + '</td>' +
+          (multi ? '<td>' + esc(r.Business_Unit) + '</td>' : '') +
+          '<td class="small">' + esc(r.Risk_Type) + '<div class="muted">' + esc(r.Risk_Subtype) + '</div></td>' +
+          '<td class="desc">' + esc(r.Risk_Scenario) + '<div class="muted small">Owner: ' + esc(r.Risk_Owner || '–') + '</div></td>' +
+          '<td data-v="' + (r.Inherent_Score || 0) + '">' + lvBadge(r.Inherent_Level, r.Inherent_Score) + '</td>' +
+          '<td data-v="' + (r.Residual_Score || 0) + '">' + lvBadge(r.Residual_Level, r.Residual_Score) + '</td>' +
+          '<td class="small">' + (r.Mitigation_Plan ? esc(r.Mitigation_Status || '') + '<div class="muted">' + esc(thai(r.Mitigation_Due_Date)) + '</div>' : '<span class="muted">–</span>') + '</td>' +
+          '<td>' + (r.kriCount ? rag(r.kriStatus, (r.kriStatus || 'ไม่มีค่า') + ' · ' + r.kriCount) : '<span class="badge warn">ไม่มี KRI</span>') + '</td>' +
+          '<td data-v="' + (r.aiScore === null ? -1 : r.aiScore) + '">' + gradeBadge(r.aiScore, r.aiGrade) + '</td>' +
+          '<td class="small nowrap">' + esc(thai(r.Updated_At)) + '</td></tr>';
+      }).join('') : '<tr><td colspan="10" class="muted">ไม่พบข้อมูล' + (canAdd ? ' — กด "+ เพิ่มความเสี่ยง"' : '') + '</td></tr>') +
+      '</tbody></table></div><p class="muted small">' + list.length + ' จาก ' + rows.length + ' รายการ' +
+      (state.period !== INIT.cfg.ASSESSMENT_PERIOD ? ' · งวดที่ไม่ใช่งวดปัจจุบันเพิ่มความเสี่ยงใหม่ไม่ได้' : '') + '</p>';
+    el.innerHTML = html;
+    sortable($('tblReg'));
+    ['fQ', 'fLevel', 'fType', 'fStatus'].forEach(function (id) {
+      $(id).addEventListener(id === 'fQ' ? 'input' : 'change', function () {
+        regFilter = { q: $('fQ').value, level: $('fLevel').value, type: $('fType').value, status: $('fStatus').value };
+        var pos = $('fQ').selectionStart;
+        renderRegister(rows);
+        if (id === 'fQ') { $('fQ').focus(); $('fQ').setSelectionRange(pos, pos); }
+      });
+    });
+    if ($('btnAdd')) $('btnAdd').onclick = function () { openRiskForm(null); };
+    $('btnExport').onclick = function () { doExport(state.dept, state.period, $('btnExport')); };
+    $('tblReg').onclick = function (ev) { var t = ev.target.closest('[data-risk]'); if (t) openRisk(t.dataset.risk); };
+  }
+
+  function doExport(dept, period, btn) {
+    if (!dept && !INIT.user.isAdmin) return toast('เลือกแผนกก่อน Export');
+    busy(btn, true, 'กำลังสร้างไฟล์…');
+    call('apiExport', [dept, period]).then(function (r) {
+      busy(btn, false);
+      openDrawer('Export สำเร็จ', '<p>' + esc(r.name) + '</p><p>' + r.rows + ' รายการ</p><p><a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noopener">เปิด Google Sheet</a></p>');
+    }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
+  }
+
+  // ---------------- ฟอร์ม Risk ----------------
+  function openRisk(riskId) {
+    openDrawer(esc(riskId), '<div class="loading"><div class="spinner"></div>กำลังโหลด…</div>', '', true);
+    call('apiGetRisk', [riskId]).then(function (d) {
+      openRiskForm(d);
+    }).catch(function (e) { $('drawerBody').innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function openRiskForm(d) {
+    var isNew = !d;
+    var dept = isNew ? (state.dept && deptInfo(state.dept).canEdit ? state.dept : (editableDepts()[0] || {}).code) : String(d.risk.Business_Unit).toUpperCase();
+    form = {
+      isNew: isNew, dept: dept,
+      risk: isNew ? { Mitigation_Status: '' } : d.risk,
+      kris: isNew ? [] : d.kris,
+      canEdit: isNew ? true : (d.canEdit && d.risk.Status !== 'Closed'),
+      closed: !isNew && d.risk.Status === 'Closed',
+      review: isNew ? null : d.review,
+      suggestion: null, messages: null
+    };
+    renderRiskForm();
+  }
+
+  function opt(list, val, labels) {
+    return list.map(function (x) {
+      var v = typeof x === 'object' ? x.v : x, t = typeof x === 'object' ? x.t : (labels && labels[x]) || x;
+      return '<option value="' + esc(v) + '"' + (String(val) === String(v) ? ' selected' : '') + '>' + esc(t) + '</option>';
+    }).join('');
+  }
+  function levelOptions(dim, val) {
+    return '<option value="">– เลือก –</option>' + [1, 2, 3, 4, 5].map(function (l) {
+      var s = INIT.scales.filter(function (x) { return x.dimension === dim && x.level === l; })[0];
+      return '<option value="' + l + '"' + (String(val) === String(l) ? ' selected' : '') + '>' + l + (s ? ' (' + esc(s.label) + ')' : '') + '</option>';
+    }).join('');
+  }
+  function fieldHtml(f, type, extra) {
+    var v = form.risk[f] == null ? '' : form.risk[f];
+    var dis = form.canEdit ? '' : ' disabled';
+    var aiBtn = form.canEdit && INIT.cfg.aiEnabled && IMPROVABLE.indexOf(f) >= 0 ? '<button type="button" class="linkbtn" data-improve="' + f + '">✨ AI ปรับข้อความ</button>' : '';
+    var input;
+    if (type === 'textarea') input = '<textarea data-f="' + f + '"' + dis + '>' + esc(v) + '</textarea>';
+    else if (type === 'select') input = '<select data-f="' + f + '"' + dis + '>' + extra + '</select>';
+    else input = '<input type="' + type + '" data-f="' + f + '" value="' + esc(v) + '"' + dis + '>';
+    return '<div class="f"><label><span>' + esc(INIT.labels[f] || f) + '</span>' + aiBtn + '</label>' + input + '</div>';
+  }
+  function subtypeOptions(type, val) {
+    var list = INIT.taxonomy.filter(function (t) { return t.type === type; });
+    return '<option value="">– เลือก Sub-type –</option>' + list.map(function (t) {
+      return '<option value="' + esc(t.subtype) + '"' + (t.subtype === val ? ' selected' : '') + '>' + esc((t.l2 ? t.l2 + ' › ' : '') + t.subtype) + '</option>';
+    }).join('');
+  }
+  function scoreLine(prefix) {
+    var i = Number(form.risk[prefix + '_Impact']), l = Number(form.risk[prefix + '_Likelihood']);
+    var s = i && l ? i * l : 0, lv = levelOf(s);
+    return '<div class="score-line" id="score-' + prefix + '">' + (lv ? 'คะแนน ' + i + ' × ' + l + ' = ' + lvBadge(lv.key, s) +
+      ' <span class="muted small">' + esc(lv.mitigation) + ' · รายงาน ' + esc(lv.reporting) + '</span>' : '<span class="muted small">เลือก Impact และ Likelihood เพื่อคำนวณระดับ</span>') + '</div>';
+  }
+
+  function kriCardHtml(k, i) {
+    var dis = form.canEdit ? '' : ' disabled';
+    var snap = k.snapshot ? '<div class="small muted" style="margin-bottom:6px">' + esc(k.KRI_ID) + ' · งวด ' + esc(k.snapshot.period) + ': ' +
+      (k.snapshot.missing ? 'ยังไม่กรอก' : esc(fmt(k.snapshot.value)) + ' ' + rag(k.snapshot.status)) + ' · <button type="button" class="linkbtn" data-hist="' + esc(k.KRI_ID) + '">ดูประวัติ</button></div>' : '';
+    var qual = k.Direction === 'Qualitative';
+    return '<div class="kri-card" data-ki="' + i + '">' +
+      (form.canEdit ? '<button type="button" class="linkbtn rm" data-rmkri="' + i + '">✕ ลบ</button>' : '') + snap +
+      '<div class="row4">' +
+      '<div class="f"><label>ประเภท</label><select data-k="KRI_Type"' + dis + '>' + opt(INIT.lists.kriTypes, k.KRI_Type || 'Leading') + '</select></div>' +
+      '<div class="f" style="grid-column: span 2"><label>ชื่อตัวชี้วัด</label><input type="text" data-k="KRI_Name" value="' + esc(k.KRI_Name) + '"' + dis + '></div>' +
+      '<div class="f"><label>หน่วย</label><input type="text" data-k="Unit" value="' + esc(k.Unit) + '"' + dis + ' placeholder="%, ครั้ง, บาท"></div>' +
+      '</div><div class="row4">' +
+      '<div class="f"><label>ความถี่</label><select data-k="Frequency"' + dis + '>' + opt(INIT.lists.frequencies, k.Frequency || 'Monthly', FREQ_LABEL) + '</select></div>' +
+      '<div class="f"><label>ทิศทาง</label><select data-k="Direction"' + dis + '>' + opt(INIT.lists.directions, k.Direction || 'Higher_Worse', DIR_LABEL) + '</select></div>' +
+      '<div class="f"><label>เกณฑ์ Amber' + (qual ? '' : (k.Direction === 'Lower_Worse' ? ' (≤)' : ' (≥)')) + '</label><input type="text" inputmode="decimal" data-k="Amber_Threshold" value="' + esc(k.Amber_Threshold) + '"' + (qual ? ' disabled' : dis) + '></div>' +
+      '<div class="f"><label>เกณฑ์ Red' + (qual ? '' : (k.Direction === 'Lower_Worse' ? ' (≤)' : ' (≥)')) + '</label><input type="text" inputmode="decimal" data-k="Red_Threshold" value="' + esc(k.Red_Threshold) + '"' + (qual ? ' disabled' : dis) + '></div>' +
+      '</div><div class="row3">' +
+      '<div class="f"><label>คำอธิบาย Green</label><input type="text" data-k="Green_Text" value="' + esc(k.Green_Text) + '"' + dis + '></div>' +
+      '<div class="f"><label>คำอธิบาย Amber</label><input type="text" data-k="Amber_Text" value="' + esc(k.Amber_Text) + '"' + dis + '></div>' +
+      '<div class="f"><label>คำอธิบาย Red</label><input type="text" data-k="Red_Text" value="' + esc(k.Red_Text) + '"' + dis + '></div>' +
+      '</div><div class="f"><label>อีเมลผู้รับผิดชอบกรอกค่า (ว่าง = EDITOR ของแผนก)</label><input type="email" data-k="Owner_Email" value="' + esc(k.Owner_Email) + '"' + dis + '></div>' +
+      '</div>';
+  }
+
+  function reviewHtml(rv) {
+    if (!rv) return '';
+    var icon = { yes: '✓', partial: '◐', no: '✗' };
+    return '<div class="ai-panel" id="reviewPanel"><h4>🔍 ผลตรวจคุณภาพโดย AI ' + gradeBadge(rv.score, rv.grade, rv.stale) +
+      (rv.stale ? ' <span class="small muted">แก้ไขหลังตรวจ — กดตรวจใหม่</span>' : '') +
+      (!rv.saved ? ' <span class="small muted">(ตรวจจากร่างที่ยังไม่บันทึก)</span>' : '') + '</h4>' +
+      (rv.summary ? '<div style="margin-bottom:6px">' + esc(rv.summary) + '</div>' : '') +
+      '<ul class="crit">' + (rv.criteria || []).map(function (c) {
+        return '<li><span class="' + c.result + '">' + icon[c.result] + '</span> ' + esc(c.name) + (c.comment ? ' <span class="muted small">— ' + esc(c.comment) + '</span>' : '') + '</li>';
+      }).join('') + '</ul>' +
+      ((rv.issues || []).length ? '<div class="small"><b>ควรแก้</b><ul class="msg-list">' + rv.issues.map(function (i) {
+        return '<li><b>' + esc(INIT.labels[i.field] || i.field) + ':</b> ' + esc(i.problem) + (i.suggestion ? ' → ' + esc(i.suggestion) : '') + '</li>';
+      }).join('') + '</ul></div>' : '') +
+      (Object.keys(rv.improved || {}).length ? '<div style="margin-top:8px">' + Object.keys(rv.improved).map(function (f) {
+        return '<div class="sugg"><div class="sugg-head"><span>ตัวอย่างเขียนใหม่ — ' + esc(INIT.labels[f] || f) + '</span>' +
+          (form.canEdit ? '<button type="button" class="linkbtn" data-usef="' + esc(f) + '" data-src="review">ใช้ข้อความนี้</button>' : '') + '</div><div class="txt">' + esc(rv.improved[f]) + '</div></div>';
+      }).join('') + '</div>' : '') +
+      (rv.reviewedAt ? '<div class="small muted">ตรวจเมื่อ ' + esc(String(rv.reviewedAt).replace('T', ' ')) + (rv.model ? ' · ' + esc(rv.model) : '') + '</div>' : '') +
+      '</div>';
+  }
+
+  function suggestionHtml(sg) {
+    if (!sg) return '';
+    var fields = Object.keys(sg.risk).filter(function (f) { return sg.risk[f] !== '' && sg.risk[f] !== null; });
+    return '<div class="ai-panel" id="suggPanel"><h4>✨ ร่างจาก AI <span class="small muted">— ตรวจและแก้ก่อนใช้ AI ไม่บันทึกให้อัตโนมัติ</span></h4>' +
+      (sg.notes && sg.notes.length ? '<div class="warn-box">' + sg.notes.map(esc).join('\n') + '</div>' : '') +
+      '<div class="section-actions"><button type="button" class="btn" data-useall="1">ใช้ทั้งหมด</button><button type="button" class="btn ghost" data-closesugg="1">ปิด</button></div>' +
+      fields.map(function (f) {
+        var v = sg.risk[f];
+        if (/_(Impact|Likelihood)$/.test(f)) v = v + ' — ' + scaleText(/Impact$/.test(f) ? 'Impact' : 'Likelihood', v);
+        return '<div class="sugg"><div class="sugg-head"><span>' + esc(INIT.labels[f] || f) + '</span><button type="button" class="linkbtn" data-usef="' + esc(f) + '" data-src="sugg">ใช้</button></div><div class="txt">' + esc(v) + '</div></div>';
+      }).join('') +
+      (sg.kris.length ? '<div class="small"><b>KRI ที่เสนอ</b></div>' + sg.kris.map(function (k, i) {
+        var t = k.Direction === 'Qualitative' ? 'เชิงคุณภาพ' : DIR_LABEL[k.Direction] + ' · Amber ' + k.Amber_Threshold + ' · Red ' + k.Red_Threshold;
+        return '<div class="sugg"><div class="sugg-head"><span>[' + esc(k.KRI_Type) + '] ' + esc(FREQ_LABEL[k.Frequency]) + '</span><button type="button" class="linkbtn" data-addkri="' + i + '">+ เพิ่ม KRI นี้</button></div>' +
+          '<div class="txt"><b>' + esc(k.KRI_Name) + '</b>' + (k.Unit ? ' (' + esc(k.Unit) + ')' : '') + ' — ' + esc(t) + '</div></div>';
+      }).join('') : '') + '</div>';
+  }
+
+  function renderRiskForm() {
+    var r = form.risk;
+    var dis = form.canEdit ? '' : ' disabled';
+    var title = form.isNew ? 'เพิ่มความเสี่ยงใหม่' : esc(r.Risk_ID) + ' <span class="muted small">' + esc(deptName(form.dept)) + ' · งวด ' + esc(r.Assessment_Period) + ' · v' + esc(r.Version) + '</span>';
+    var actions = '';
+    if (form.canEdit && INIT.cfg.aiEnabled) actions += '<button class="btn ghost" id="btnAiDraft">✨ AI ช่วยร่าง</button>';
+    if (INIT.cfg.aiEnabled && (form.canEdit || !form.isNew)) actions += '<button class="btn ghost" id="btnAiReview">🔍 AI ตรวจ</button>';
+    if (!form.isNew && deptInfo(form.dept).canEdit) actions += '<button class="btn ghost" id="btnClose">' + (form.closed ? 'เปิดใช้อีกครั้ง' : 'ปิดความเสี่ยง') + '</button>';
+    if (form.canEdit) actions += '<button class="btn" id="btnSave">บันทึก</button>';
+
+    var types = {};
+    INIT.taxonomy.forEach(function (t) { types[t.type] = 1; });
+    var tax = INIT.taxonomy.filter(function (t) { return t.type === r.Risk_Type && t.subtype === r.Risk_Subtype; })[0];
+    var html = '';
+    if (form.messages) html += form.messages;
+    if (form.canEdit && INIT.cfg.aiEnabled) {
+      html += '<div class="ai-panel hidden" id="draftBox"><h4>✨ ให้ AI ช่วยร่าง</h4><div class="f"><label>อธิบายความเสี่ยงสั้นๆ (เหตุการณ์ / สาเหตุ / สิ่งที่กังวล) — AI จะร่างทุกช่องให้สอดคล้องกับข้อมูลที่กรอกไว้แล้ว</label>' +
+        '<textarea id="draftBrief" placeholder="เช่น จอ LED ริมถนนดับบ่อยช่วงหน้าฝน ทำให้ต้องชดเชยเวลาโฆษณาให้ลูกค้า"></textarea></div>' +
+        '<div class="section-actions"><button type="button" class="btn" id="btnDraftGo">ให้ AI ร่าง</button><span class="small muted">ห้ามใส่ข้อมูลส่วนบุคคลหรือความลับที่ไม่จำเป็น</span></div></div>';
+    }
+    html += suggestionHtml(form.suggestion);
+    html += reviewHtml(form.review);
+    if (form.closed) html += '<div class="warn-box">ความเสี่ยงนี้ปิดแล้ว — กด "เปิดใช้อีกครั้ง" เพื่อแก้ไข</div>';
+    html += '<fieldset><legend>1. ข้อมูลความเสี่ยง</legend>';
+    if (form.isNew && editableDepts().length > 1) {
+      html += '<div class="f"><label>แผนก (Business unit)</label><select id="fDept">' + opt(editableDepts().map(function (d) { return { v: d.code, t: d.code + ' · ' + d.name }; }), form.dept) + '</select></div>';
+    }
+    html += '<div class="row2"><div class="f"><label>Risk Type</label><select data-f="Risk_Type"' + dis + '><option value="">– เลือก –</option>' + opt(Object.keys(types).sort(), r.Risk_Type) + '</select></div>' +
+      '<div class="f"><label>Risk Sub-type</label><select data-f="Risk_Subtype"' + dis + '>' + subtypeOptions(r.Risk_Type, r.Risk_Subtype) + '</select></div></div>' +
+      '<div class="hint-box' + (tax && tax.desc ? '' : ' hidden') + '" id="taxHint">' + esc(tax ? tax.desc : '') + '</div>' +
+      fieldHtml('Risk_Scenario', 'textarea') + fieldHtml('Risk_Cause', 'textarea') + fieldHtml('Consequences', 'textarea') + '</fieldset>';
+    html += '<fieldset><legend>2. Inherent risk (ก่อนมีมาตรการควบคุม)</legend><div class="row2">' +
+      '<div>' + fieldHtml('Inherent_Impact', 'select', levelOptions('Impact', r.Inherent_Impact)) + '<div class="hint-box" id="hint-Inherent_Impact">' + esc(scaleText('Impact', r.Inherent_Impact) || 'ระดับความรุนแรงของผลกระทบ หากเกิดขึ้นโดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
+      '<div>' + fieldHtml('Inherent_Likelihood', 'select', levelOptions('Likelihood', r.Inherent_Likelihood)) + '<div class="hint-box" id="hint-Inherent_Likelihood">' + esc(scaleText('Likelihood', r.Inherent_Likelihood) || 'โอกาส/ความถี่ที่จะเกิด โดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
+      '</div>' + scoreLine('Inherent') + '<div class="row2">' + fieldHtml('Inherent_Impact_Rationale', 'textarea') + fieldHtml('Inherent_Likelihood_Rationale', 'textarea') + '</div></fieldset>';
+    html += '<fieldset><legend>3. มาตรการควบคุมที่มีอยู่</legend>' + fieldHtml('Existing_Control', 'textarea') + '</fieldset>';
+    html += '<fieldset><legend>4. Residual risk (หลังมีมาตรการควบคุมที่ทำอยู่แล้ว)</legend><div class="row2">' +
+      '<div>' + fieldHtml('Residual_Impact', 'select', levelOptions('Impact', r.Residual_Impact)) + '<div class="hint-box" id="hint-Residual_Impact">' + esc(scaleText('Impact', r.Residual_Impact) || 'ความรุนแรงหลังมีมาตรการควบคุมที่ทำอยู่แล้ว') + '</div></div>' +
+      '<div>' + fieldHtml('Residual_Likelihood', 'select', levelOptions('Likelihood', r.Residual_Likelihood)) + '<div class="hint-box" id="hint-Residual_Likelihood">' + esc(scaleText('Likelihood', r.Residual_Likelihood) || 'โอกาสเกิดหลังมีมาตรการควบคุมที่ทำอยู่แล้ว') + '</div></div>' +
+      '</div>' + scoreLine('Residual') + '<div class="row2">' + fieldHtml('Residual_Impact_Rationale', 'textarea') + fieldHtml('Residual_Likelihood_Rationale', 'textarea') + '</div></fieldset>';
+    html += '<fieldset><legend>5. แผนลดความเสี่ยงเพิ่มเติม</legend>' + fieldHtml('Mitigation_Plan', 'textarea') +
+      '<div class="row3">' + fieldHtml('Mitigation_Due_Date', 'date') +
+      fieldHtml('Mitigation_Status', 'select', '<option value="">–</option>' + opt(INIT.lists.mitigationStatuses, r.Mitigation_Status)) +
+      fieldHtml('Risk_Owner', 'text') + '</div></fieldset>';
+    html += '<fieldset><legend>6. Key Risk Indicators (KRI)</legend><div class="small muted" style="margin-bottom:8px">Leading = ตัวเตือนล่วงหน้าก่อนเกิดเหตุ · Lagging = ผลที่เกิดขึ้นแล้ว · ระบบคำนวณสถานะ Green/Amber/Red จากเกณฑ์ตัวเลขให้อัตโนมัติ</div>' +
+      '<div id="kriCards">' + form.kris.map(kriCardHtml).join('') + '</div>' +
+      (form.canEdit ? '<button type="button" class="btn ghost" id="btnAddKri">+ เพิ่ม KRI</button>' : '') + '</fieldset>';
+    if (!form.isNew) html += '<p class="small muted">สร้างโดย ' + esc(r.Created_By) + ' ' + esc(thai(r.Created_At)) + ' · แก้ไขล่าสุดโดย ' + esc(r.Updated_By) + ' ' + esc(String(r.Updated_At || '').replace('T', ' ')) + '</p>';
+
+    openDrawer(title, html, actions, true);
+    bindRiskForm();
+  }
+
+  /** อ่านค่าจากฟอร์มกลับเข้า form.risk / form.kris */
+  function collectForm() {
+    if (!form) return;
+    Array.prototype.forEach.call(document.querySelectorAll('#drawerBody [data-f]'), function (el) { form.risk[el.getAttribute('data-f')] = el.value; });
+    if ($('fDept')) form.dept = $('fDept').value;
+    form.kris = Array.prototype.map.call(document.querySelectorAll('#kriCards .kri-card'), function (card) {
+      var i = Number(card.getAttribute('data-ki'));
+      var k = Object.assign({}, form.kris[i]);
+      Array.prototype.forEach.call(card.querySelectorAll('[data-k]'), function (el) { k[el.getAttribute('data-k')] = el.value; });
+      return k;
+    });
+  }
+
+  function bindRiskForm() {
+    var body = $('drawerBody');
+    body.oninput = function () { form.dirty = true; };
+    body.onchange = function (ev) {
+      var t = ev.target;
+      form.dirty = true;
+      var f = t.getAttribute('data-f');
+      if (f === 'Risk_Type') {
+        collectForm();
+        form.risk.Risk_Subtype = '';
+        body.querySelector('[data-f="Risk_Subtype"]').innerHTML = subtypeOptions(t.value, '');
+        $('taxHint').classList.add('hidden');
+      } else if (f === 'Risk_Subtype') {
+        var tax = INIT.taxonomy.filter(function (x) { return x.type === form.risk.Risk_Type && x.subtype === t.value; })[0];
+        $('taxHint').textContent = tax ? tax.desc : '';
+        $('taxHint').classList.toggle('hidden', !(tax && tax.desc));
+      } else if (/_(Impact|Likelihood)$/.test(f || '')) {
+        collectForm();
+        var prefix = f.split('_')[0];
+        $('score-' + prefix).outerHTML = scoreLine(prefix);
+        $('hint-' + f).textContent = scaleText(/Impact$/.test(f) ? 'Impact' : 'Likelihood', t.value);
+      } else if (t.getAttribute('data-k') === 'Direction') {
+        collectForm();
+        $('kriCards').innerHTML = form.kris.map(kriCardHtml).join('');
+      }
+    };
+    body.onclick = function (ev) {
+      var t = ev.target;
+      if (t.dataset.improve) return improveField(t.dataset.improve, t);
+      if (t.dataset.rmkri !== undefined) { collectForm(); form.kris.splice(Number(t.dataset.rmkri), 1); form.dirty = true; $('kriCards').innerHTML = form.kris.map(kriCardHtml).join(''); return; }
+      if (t.dataset.hist) {
+        if (form.dirty && form.canEdit && !confirm('มีการแก้ไขที่ยังไม่บันทึก — ออกจากฟอร์มไปดูประวัติ KRI หรือไม่?')) return;
+        return openKriHistory(t.dataset.hist, form.risk.Risk_ID);
+      }
+      if (t.dataset.usef) {
+        collectForm();
+        var src = t.dataset.src === 'review' ? form.review.improved : form.suggestion.risk;
+        form.risk[t.dataset.usef] = src[t.dataset.usef];
+        if (t.dataset.usef === 'Risk_Type') form.risk.Risk_Subtype = form.suggestion && form.suggestion.risk.Risk_Subtype || '';
+        form.dirty = true;
+        rerenderKeepScroll();
+        return;
+      }
+      if (t.dataset.useall) {
+        collectForm();
+        Object.keys(form.suggestion.risk).forEach(function (f) { if (form.suggestion.risk[f] !== '') form.risk[f] = form.suggestion.risk[f]; });
+        form.kris = form.kris.concat(form.suggestion.kris);
+        form.suggestion = null; form.dirty = true;
+        rerenderKeepScroll();
+        toast('ใส่ข้อความจาก AI แล้ว — ตรวจทานก่อนกดบันทึก');
+        return;
+      }
+      if (t.dataset.addkri !== undefined) {
+        collectForm();
+        form.kris.push(form.suggestion.kris[Number(t.dataset.addkri)]);
+        form.dirty = true;
+        $('kriCards').innerHTML = form.kris.map(kriCardHtml).join('');
+        t.disabled = true; t.textContent = 'เพิ่มแล้ว';
+        return;
+      }
+      if (t.dataset.closesugg) { collectForm(); form.suggestion = null; rerenderKeepScroll(); return; }
+    };
+    if ($('btnAddKri')) $('btnAddKri').onclick = function () {
+      collectForm();
+      form.kris.push({ KRI_Type: form.kris.some(function (k) { return k.KRI_Type === 'Leading'; }) ? 'Lagging' : 'Leading', Frequency: 'Monthly', Direction: 'Higher_Worse' });
+      form.dirty = true;
+      $('kriCards').innerHTML = form.kris.map(kriCardHtml).join('');
+    };
+    if ($('fDept')) $('fDept').onchange = function () { form.dept = this.value; };
+    if ($('btnSave')) $('btnSave').onclick = saveRisk;
+    if ($('btnAiReview')) $('btnAiReview').onclick = aiReview;
+    if ($('btnClose')) $('btnClose').onclick = toggleClose;
+    if ($('btnAiDraft')) $('btnAiDraft').onclick = function () { $('draftBox').classList.toggle('hidden'); if (!$('draftBox').classList.contains('hidden')) $('draftBrief').focus(); $('drawerBody').scrollTop = 0; };
+    if ($('btnDraftGo')) $('btnDraftGo').onclick = aiDraft;
+  }
+
+  function rerenderKeepScroll() {
+    var top = $('drawerBody').scrollTop;
+    renderRiskForm();
+    $('drawerBody').scrollTop = top;
+  }
+
+  function aiDraft() {
+    collectForm();
+    var btn = $('btnDraftGo');
+    var brief = $('draftBrief').value.trim();
+    if (!brief && !form.risk.Risk_Scenario) return toast('อธิบายความเสี่ยงสั้นๆ ก่อน');
+    busy(btn, true, 'AI กำลังร่าง… (อาจใช้เวลา 10–40 วินาที)');
+    call('apiAiSuggest', [{ mode: 'draft', dept: form.dept, brief: brief, draft: form.risk, kris: form.kris }]).then(function (s) {
+      busy(btn, false);
+      form.suggestion = s;
+      renderRiskForm();
+    }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
+  }
+
+  function improveField(f, btn) {
+    collectForm();
+    if (!String(form.risk[f] || '').trim() && !form.risk.Risk_Scenario) return toast('กรอกข้อมูลความเสี่ยงก่อน แล้ว AI จะช่วยปรับ');
+    busy(btn, true, 'AI กำลังปรับ…');
+    call('apiAiSuggest', [{ mode: 'improve', field: f, dept: form.dept, draft: form.risk, kris: form.kris }]).then(function (s) {
+      busy(btn, false);
+      var wrap = btn.closest('.f');
+      var old = wrap.querySelector('.sugg'); if (old) old.remove();
+      var box = document.createElement('div');
+      box.className = 'sugg';
+      box.style.border = '1px solid var(--accent)';
+      box.innerHTML = '<div class="sugg-head"><span>✨ AI เสนอ — ' + esc(s.reason) + '</span><span><button type="button" class="linkbtn" data-apply="1">ใช้ข้อความนี้</button> · <button type="button" class="linkbtn" data-dismiss="1">ปิด</button></span></div><div class="txt">' + esc(s.text) + '</div>';
+      wrap.appendChild(box);
+      box.onclick = function (ev) {
+        ev.stopPropagation();
+        if (ev.target.dataset.apply) { wrap.querySelector('[data-f]').value = s.text; form.risk[f] = s.text; form.dirty = true; box.remove(); }
+        if (ev.target.dataset.dismiss) box.remove();
+      };
+    }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
+  }
+
+  function aiReview() {
+    if (form.canEdit) collectForm();
+    var btn = $('btnAiReview');
+    busy(btn, true, 'AI กำลังตรวจ…');
+    call('apiAiReview', [{ dept: form.dept, riskId: form.isNew ? '' : form.risk.Risk_ID, risk: form.risk, kris: form.kris }]).then(function (rv) {
+      busy(btn, false);
+      form.review = rv;
+      if (rv.saved) invalidate();
+      renderRiskForm();
+      $('drawerBody').scrollTop = 0;
+    }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
+  }
+
+  function saveRisk() {
+    collectForm();
+    var btn = $('btnSave');
+    busy(btn, true, 'กำลังบันทึก…');
+    form.risk.Risk_ID = form.isNew ? '' : form.risk.Risk_ID;
+    call('apiSaveRisk', [{ dept: form.dept, period: state.period, risk: form.risk, kris: form.kris }]).then(function (res) {
+      busy(btn, false);
+      invalidate();
+      toast('บันทึก ' + res.riskId + ' แล้ว');
+      var warn = res.warnings && res.warnings.length ? '<div class="warn-box">บันทึกแล้ว แต่ควรตรวจสอบ:\n• ' + res.warnings.map(esc).join('\n• ') + '</div>' : '';
+      call('apiGetRisk', [res.riskId]).then(function (d) {
+        openRiskForm(d);
+        form.messages = warn;
+        if (warn) renderRiskForm();
+        if (state.tab !== 'settings') showTabSilently();
+      });
+    }).catch(function (e) {
+      busy(btn, false);
+      form.messages = '<div class="err-box">' + esc(errMsg(e)) + '</div>';
+      rerenderKeepScroll();
+      $('drawerBody').scrollTop = 0;
+    });
+  }
+  function showTabSilently() {
+    ({ dashboard: loadDashboard, register: loadRegister, kri: function () {}, approval: loadApproval, ai: loadAi, settings: function () {} }[state.tab])();
+  }
+
+  function toggleClose() {
+    var closing = !form.closed;
+    if (closing && !confirm('ปิดความเสี่ยง ' + form.risk.Risk_ID + '? (ข้อมูลยังเก็บไว้ ดูได้ในตัวกรอง "ปิดแล้ว")')) return;
+    var btn = $('btnClose');
+    busy(btn, true);
+    call('apiSetRiskStatus', [form.risk.Risk_ID, closing ? 'Closed' : 'Active']).then(function () {
+      invalidate();
+      toast(closing ? 'ปิดความเสี่ยงแล้ว' : 'เปิดใช้อีกครั้งแล้ว');
+      openRisk(form.risk.Risk_ID);
+      showTabSilently();
+    }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
+  }
+
+  // ---------------- ประวัติ KRI ----------------
+  function openKriHistory(kriId, back) {
+    form = null;
+    openDrawer(esc(kriId), '<div class="loading"><div class="spinner"></div>กำลังโหลด…</div>', '', true);
+    call('apiKriHistory', [kriId]).then(function (d) {
+      var k = d.kri;
+      var html = (back ? '<p><button class="linkbtn" id="backRisk">← กลับไป ' + esc(back) + '</button></p>' : '') +
+        '<div class="kv"><div>ความเสี่ยง</div><div>' + esc(k.riskScenario) + '</div><div>ประเภท</div><div>' + esc(k.KRI_Type) + ' · ' + esc(FREQ_LABEL[k.Frequency]) + ' · ' + esc(DIR_LABEL[k.Direction]) + '</div>' +
+        '<div>เกณฑ์</div><div>' + rag('Green', 'Green ' + (k.thresholds.Green || '–')) + ' &nbsp; ' + rag('Amber', 'Amber ' + (k.thresholds.Amber || '–')) + ' &nbsp; ' + rag('Red', 'Red ' + (k.thresholds.Red || '–')) + '</div></div>' +
+        '<div class="chart-box"><canvas id="chHist"></canvas></div>' +
+        '<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>งวด</th><th class="num">ค่า</th><th>สถานะ</th><th>คำอธิบาย / การดำเนินการ</th><th>AI</th><th>บันทึกโดย</th></tr></thead><tbody>' +
+        (d.values.length ? d.values.slice().reverse().map(function (v) {
+          return '<tr><td class="nowrap">' + esc(v.period) + '</td><td class="num">' + esc(fmt(v.value) === '–' ? v.value : fmt(v.value)) + '</td><td>' + rag(v.status) + '</td><td class="desc small">' + esc(v.comment) +
+            (v.action ? '<div class="muted">→ ' + esc(v.action) + '</div>' : '') + '</td><td class="small">' + esc(v.aiResult || '') + (v.aiFeedback ? '<div class="muted desc">' + esc(v.aiFeedback) + '</div>' : '') +
+            '</td><td class="small">' + esc(String(v.by).split('@')[0]) + '<div class="muted">' + esc(String(v.at).slice(0, 10)) + '</div></td></tr>';
+        }).join('') : '<tr><td colspan="6" class="muted">ยังไม่มีค่า</td></tr>') + '</tbody></table></div>';
+      $('drawerTitle').innerHTML = esc(k.KRI_ID) + ' · ' + esc(k.KRI_Name) + (k.Unit ? ' <span class="muted small">(' + esc(k.Unit) + ')</span>' : '');
+      $('drawerBody').innerHTML = html;
+      $('drawerBody').onclick = null; $('drawerBody').onchange = null; $('drawerBody').oninput = null;
+      if ($('backRisk')) $('backRisk').onclick = function () { openRisk(back); };
+      var nums = d.values.map(function (v) { return parseFloat(v.value); });
+      if (nums.some(function (n) { return !isNaN(n); })) {
+        var ds = [{ label: k.KRI_Name, data: nums, borderColor: cssVar('--accent'), backgroundColor: cssVar('--accent'), tension: .2,
+          pointBackgroundColor: d.values.map(function (v) { return cssVar({ Green: '--lv-low', Amber: '--lv-mod', Red: '--lv-vhigh' }[v.status] || '--muted'); }), pointRadius: 5 }];
+        if (k.Amber_Threshold !== '' && k.Amber_Threshold != null) ds.push({ label: 'Amber', data: d.values.map(function () { return Number(k.Amber_Threshold); }), borderColor: cssVar('--lv-mod'), borderDash: [6, 4], pointRadius: 0 });
+        if (k.Red_Threshold !== '' && k.Red_Threshold != null) ds.push({ label: 'Red', data: d.values.map(function () { return Number(k.Red_Threshold); }), borderColor: cssVar('--lv-vhigh'), borderDash: [6, 4], pointRadius: 0 });
+        chart('chHist', { type: 'line', data: { labels: d.values.map(function (v) { return v.period; }), datasets: ds }, options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } } });
+      }
+    }).catch(function (e) { $('drawerBody').innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  // ============================ กรอกค่า KRI ============================
+  function loadKri() {
+    var el = $('tab-kri');
+    if (!INIT.depts.length) { el.innerHTML = '<div class="card muted">ยังไม่มีแผนก</div>'; return; }
+    kriDept = state.dept || kriDept || INIT.depts[0].code;
+    var key = 'kri:' + kriDept + ':' + kriMonth;
+    if (cache[key]) return renderKri(cache[key]);
+    loadingInto(el);
+    call('apiKriEntry', [kriDept, kriMonth]).then(function (d) { cache[key] = d; renderKri(d); })
+      .catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function statusPreview(k, value, manual) {
+    var v = parseFloat(String(value).replace(/,/g, '')), a = parseFloat(k.Amber_Threshold), r = parseFloat(k.Red_Threshold);
+    if (k.Direction === 'Qualitative' || isNaN(v) || isNaN(a) || isNaN(r)) return manual || '';
+    if (k.Direction === 'Lower_Worse') return v <= r ? 'Red' : v <= a ? 'Amber' : 'Green';
+    return v >= r ? 'Red' : v >= a ? 'Amber' : 'Green';
+  }
+  function needsManual(k) {
+    return k.Direction === 'Qualitative' || k.Amber_Threshold === '' || k.Red_Threshold === '' || k.Amber_Threshold == null || k.Red_Threshold == null;
+  }
+
+  function renderKri(d) {
+    var el = $('tab-kri');
+    var today = INIT.today;
+    var html = '<div class="filters">' +
+      '<select id="kDept">' + INIT.depts.map(function (x) { return '<option value="' + esc(x.code) + '"' + (x.code === d.dept ? ' selected' : '') + '>' + esc(x.code + ' · ' + x.name) + '</option>'; }).join('') + '</select>' +
+      '<label class="small muted">เดือนที่รายงาน <input type="month" id="kMonth" value="' + esc(d.month) + '" max="' + esc(today.slice(0, 7)) + '"></label>' +
+      '<span class="small muted">KRI รายไตรมาสจะบันทึกเป็นไตรมาสของเดือนที่เลือก · ความเสี่ยงงวดประเมิน ' + esc(INIT.cfg.ASSESSMENT_PERIOD) + '</span><span style="flex:1"></span>' +
+      (d.canEdit && d.rows.length ? '<button class="btn" id="kSave">บันทึกค่า KRI</button>' : '') + '</div>';
+    html += '<div id="kMsg"></div>';
+    if (!d.rows.length) html += '<div class="card muted">ยังไม่มี KRI ของแผนกนี้ — เพิ่ม KRI ในฟอร์ม Risk Register</div>';
+    else {
+      html += '<div class="card table-wrap"><table class="kri-entry"><thead><tr><th>KRI</th><th>งวด / กำหนด</th><th>เกณฑ์</th><th>งวดก่อน</th><th>ค่า</th><th>สถานะ</th><th>คำอธิบาย (จำเป็นเมื่อ Amber/Red)</th><th>การดำเนินการ</th></tr></thead><tbody>' +
+        d.rows.map(function (k, i) {
+          var v = k.value || {};
+          var dis = d.canEdit ? '' : ' disabled';
+          var manual = needsManual(k);
+          var st = v.Status || '';
+          var overdue = !k.value && today > k.due;
+          return '<tr data-i="' + i + '"><td style="min-width:200px"><button class="linkbtn" data-hist="' + esc(k.KRI_ID) + '"><b>' + esc(k.KRI_Name) + '</b></button>' + (k.Unit ? ' <span class="muted small">(' + esc(k.Unit) + ')</span>' : '') +
+            '<div class="small muted">' + esc(k.KRI_ID) + ' · ' + esc(k.KRI_Type) + ' · ' + esc(FREQ_LABEL[k.Frequency]) + '</div><div class="small muted desc">' + esc(String(k.riskScenario || '').slice(0, 90)) + '</div></td>' +
+            '<td class="nowrap"><b>' + esc(k.period) + '</b><div class="small ' + (overdue ? '' : 'muted') + '" style="' + (overdue ? 'color:var(--bad)' : '') + '">กำหนด ' + esc(k.due) + (overdue ? ' เลยกำหนด' : '') + '</div></td>' +
+            '<td class="small nowrap"><div>' + rag('Green', k.thresholds.Green || '–') + '</div><div>' + rag('Amber', k.thresholds.Amber || '–') + '</div><div>' + rag('Red', k.thresholds.Red || '–') + '</div></td>' +
+            '<td class="small">' + (k.prev ? esc(k.prev.Value) + '<br>' + rag(k.prev.Status) : '–') + '</td>' +
+            '<td><input type="text" ' + (k.Direction === 'Qualitative' ? '' : 'inputmode="decimal" ') + 'data-v="Value" value="' + esc(v.Value == null ? '' : v.Value) + '"' + dis + ' placeholder="' + (k.Direction === 'Qualitative' ? 'ข้อความ' : 'ตัวเลข') + '"></td>' +
+            '<td>' + (manual ? '<select data-v="Status"' + dis + '><option value="">–</option>' + opt(['Green', 'Amber', 'Red'], st) + '</select>' : '<span data-preview>' + rag(st) + '</span>') +
+            (v.Entered_By ? '<div class="small muted">' + esc(String(v.Entered_By).split('@')[0]) + ' ' + esc(String(v.Entered_At).slice(0, 10)) + '</div>' : '') + '</td>' +
+            '<td><textarea data-v="Comment"' + dis + '>' + esc(v.Comment || '') + '</textarea>' +
+            (v.AI_Result ? '<div class="small"><b>AI ' + esc(v.AI_Result) + '</b><div class="muted desc">' + esc(v.AI_Feedback) + '</div></div>' :
+              (k.value && (st === 'Amber' || st === 'Red') && INIT.cfg.aiEnabled ? '<button class="linkbtn" data-aikri="' + esc(k.KRI_ID) + '" data-period="' + esc(k.period) + '">🔍 AI ตรวจคำอธิบาย</button>' : '')) + '</td>' +
+            '<td><textarea data-v="Action_Taken"' + dis + '>' + esc(v.Action_Taken || '') + '</textarea></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    el.innerHTML = html;
+    $('kDept').onchange = function () { kriDept = this.value; state.dept = kriDept; $('selDept').value = kriDept; loadKri(); };
+    $('kMonth').onchange = function () { if (this.value) { kriMonth = this.value; loadKri(); } };
+    el.oninput = function (ev) {
+      var t = ev.target;
+      if (t.getAttribute('data-v') !== 'Value') return;
+      var tr = t.closest('tr'), k = d.rows[Number(tr.dataset.i)];
+      var p = tr.querySelector('[data-preview]');
+      if (p) p.innerHTML = rag(statusPreview(k, t.value, ''));
+    };
+    el.onclick = function (ev) {
+      var t = ev.target.closest('[data-hist],[data-aikri]');
+      if (!t) return;
+      if (t.dataset.hist) return openKriHistory(t.dataset.hist);
+      busy(t, true, 'AI กำลังตรวจ…');
+      call('apiAiReviewKri', [t.dataset.aikri, t.dataset.period]).then(function (r) {
+        delete cache['kri:' + d.dept + ':' + d.month];
+        toast('AI ให้คะแนน ' + r.grade + ' · ' + r.score);
+        loadKri();
+      }).catch(function (e) { busy(t, false); toast(errMsg(e)); });
+    };
+    if ($('kSave')) $('kSave').onclick = function () {
+      var rows = Array.prototype.map.call(el.querySelectorAll('tbody tr'), function (tr) {
+        var k = d.rows[Number(tr.dataset.i)];
+        var o = { KRI_ID: k.KRI_ID, Period: k.period };
+        Array.prototype.forEach.call(tr.querySelectorAll('[data-v]'), function (x) { o[x.getAttribute('data-v')] = x.value; });
+        return o;
+      }).filter(function (o) { return String(o.Value).trim() !== ''; });
+      if (!rows.length) return toast('ยังไม่ได้กรอกค่า');
+      var btn = $('kSave');
+      busy(btn, true, 'กำลังบันทึก…');
+      call('apiSaveKriValues', [d.dept, rows]).then(function (r) {
+        busy(btn, false);
+        invalidate();
+        $('kMsg').innerHTML = (r.errors.length ? '<div class="err-box">บันทึกไม่ได้บางรายการ:\n• ' + r.errors.map(esc).join('\n• ') + '</div>' : '');
+        toast('บันทึก ' + r.saved + ' รายการ' + (r.errors.length ? ' · มีข้อผิดพลาด ' + r.errors.length : ''));
+        if (!r.errors.length) loadKri();
+      }).catch(function (e) { busy(btn, false); $('kMsg').innerHTML = '<div class="err-box">' + esc(errMsg(e)) + '</div>'; });
+    };
+  }
+
+  // ============================ อนุมัติ ============================
+  function loadApproval() {
+    var el = $('tab-approval');
+    var key = 'appr:' + state.period;
+    if (cache[key]) return renderApproval(cache[key]);
+    loadingInto(el);
+    call('apiApprovals', [state.period]).then(function (d) { cache[key] = d; renderApproval(d); })
+      .catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function renderApproval(d) {
+    var el = $('tab-approval');
+    var rows = state.dept ? d.rows.filter(function (r) { return r.code === state.dept; }) : d.rows;
+    var html = '<p class="muted small">ขั้นตอน: แผนก (EDITOR) ตรวจข้อมูลและกด <b>ส่งอนุมัติ</b> → ผู้อนุมัติของแผนกกด <b>อนุมัติ</b> หรือ <b>ส่งกลับ</b> · ถ้าแก้ไขข้อมูลหลังส่ง/อนุมัติ สถานะจะกลับเป็น "ร่าง" ต้องส่งใหม่ · งวด ' + esc(d.period) + '</p>';
+    html += '<div class="card table-wrap"><table id="tblAppr"><thead><tr><th>แผนก</th><th>สถานะ</th><th class="num">Risk</th><th class="num">High+</th><th class="num">KRI Red</th><th class="num">KRI ค้าง</th><th class="num">AI</th><th>ผู้ประเมิน</th><th>ผู้อนุมัติ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>' +
+      (rows.length ? rows.map(function (r) {
+        var s = r.summary || {};
+        var acts = '';
+        if (r.canSubmit && (r.status === 'Draft' || r.status === 'Returned')) acts += '<button class="btn" data-act="submit" data-dept="' + esc(r.code) + '">ส่งอนุมัติ</button> ';
+        if (r.canApprove && r.status === 'Submitted') acts += '<button class="btn" data-act="approve" data-dept="' + esc(r.code) + '">อนุมัติ</button> <button class="btn ghost" data-act="return" data-dept="' + esc(r.code) + '">ส่งกลับ</button> ';
+        acts += '<button class="btn ghost" data-export="' + esc(r.code) + '" title="Export รูปแบบ Sheet เดิม">⇩</button>';
+        return '<tr><td><b>' + esc(r.code) + '</b> ' + esc(r.name) + '<div class="small muted">ผู้อนุมัติ: ' + esc(r.approverEmail || '(ยังไม่กำหนด — ADMIN อนุมัติ)') + '</div></td><td>' + approvalBadge(r.status) +
+          '</td><td class="num">' + (s.risks || 0) + '</td><td class="num">' + (s.highPlus || 0) + '</td><td class="num">' + (s.red || 0) + '</td><td class="num">' + (s.missing || 0) +
+          '</td><td class="num">' + (s.aiAvg == null ? '–' : s.aiAvg) + '</td><td class="small">' + esc(String(r.assessor).split('@')[0] || '–') + '<div class="muted">' + esc(String(r.assessedAt).slice(0, 10)) +
+          '</div></td><td class="small">' + esc(String(r.approver).split('@')[0] || '–') + '<div class="muted">' + esc(String(r.approvedAt).slice(0, 10)) + '</div></td><td class="small desc">' + esc(r.note) + '</td><td class="nowrap">' + acts + '</td></tr>';
+      }).join('') : '<tr><td colspan="11" class="muted">ไม่มีแผนก</td></tr>') + '</tbody></table></div>';
+    el.innerHTML = html;
+    el.onclick = function (ev) {
+      var t = ev.target.closest('[data-act],[data-export]');
+      if (!t) return;
+      if (t.dataset.export) return doExport(t.dataset.export, d.period, t);
+      var act = t.dataset.act;
+      var r = d.rows.filter(function (x) { return x.code === t.dataset.dept; })[0];
+      if (act === 'submit' && r.summary && r.summary.aiAvg != null && r.summary.aiAvg < INIT.cfg.SCORE_THRESHOLD &&
+        !confirm('คะแนนคุณภาพการเขียนเฉลี่ย (AI) = ' + r.summary.aiAvg + ' ต่ำกว่าเกณฑ์ ' + INIT.cfg.SCORE_THRESHOLD + ' — ยืนยันส่งอนุมัติ?')) return;
+      var note = prompt({ submit: 'หมายเหตุถึงผู้อนุมัติ (ไม่บังคับ)', approve: 'หมายเหตุการอนุมัติ (ไม่บังคับ)', 'return': 'เหตุผลที่ส่งกลับ' }[act], '');
+      if (note === null) return;
+      if (act === 'return' && !note.trim()) return toast('กรุณาระบุเหตุผลที่ส่งกลับ');
+      busy(t, true);
+      call('apiApprovalAction', [t.dataset.dept, d.period, act, note]).then(function () {
+        invalidate(); toast('บันทึกแล้ว'); loadApproval();
+      }).catch(function (e) { busy(t, false); toast(errMsg(e)); });
+    };
+  }
+
+  // ============================ AI ============================
+  function loadAi() {
+    var el = $('tab-ai');
+    var key = 'ai:' + state.dept + ':' + state.period;
+    if (cache[key]) return renderAi(cache[key]);
+    loadingInto(el);
+    call('apiAiOverview', [state.dept, state.period]).then(function (d) { cache[key] = d; renderAi(d); })
+      .catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function renderAi(d) {
+    var el = $('tab-ai');
+    var scored = d.rows.filter(function (r) { return r.score !== null; });
+    var avg = scored.length ? Math.round(scored.reduce(function (s, r) { return s + r.score; }, 0) / scored.length) : null;
+    var low = scored.filter(function (r) { return r.score < d.threshold; }).length;
+    var stale = d.rows.filter(function (r) { return r.stale || r.score === null; }).length;
+    var html = (INIT.cfg.aiEnabled ? '' : '<div class="warn-box">ยังไม่ได้ตั้ง API key ของ AI — ADMIN ตั้งค่าใน Script Properties</div>') +
+      '<div class="grid kpis">' + kpi('คะแนนเฉลี่ย', avg === null ? '–' : avg, 'ตรวจแล้ว ' + scored.length + '/' + d.rows.length, avg === null ? '' : avg >= d.threshold ? 'good' : 'warn') +
+      kpi('ต่ำกว่าเกณฑ์ ' + d.threshold, low, 'ควรปรับปรุงการเขียน', low ? 'warn' : 'good') +
+      kpi('รอตรวจ / แก้หลังตรวจ', stale, 'ระบบตรวจอัตโนมัติทุกชั่วโมง', stale ? 'warn' : 'good') + '</div>';
+    html += '<div class="grid cols-2" style="margin-top:12px"><div class="card"><h3>ผลรายเกณฑ์</h3><div class="chart-box" style="height:' + Math.max(240, d.criteria.length * 34) + 'px"><canvas id="chCrit"></canvas></div></div>' +
+      '<div class="card"><h3>วิธีใช้ AI</h3><ul class="small" style="padding-left:18px;margin:0">' +
+      '<li><b>✨ AI ช่วยร่าง</b> ในฟอร์ม Risk: พิมพ์คำอธิบายสั้นๆ แล้ว AI ร่างทุกช่อง + เสนอ KRI พร้อมเกณฑ์ — เลือกใช้ทีละช่องได้</li>' +
+      '<li><b>✨ AI ปรับข้อความ</b> ข้างแต่ละช่อง: ให้ AI เกลาข้อความที่เขียนไว้แล้วให้ชัดเจนขึ้น</li>' +
+      '<li><b>🔍 AI ตรวจ</b>: ประเมินตามเกณฑ์ (ADMIN แก้เกณฑ์ได้ที่หน้า ตั้งค่า) พร้อมตัวอย่างการเขียนใหม่</li>' +
+      '<li>ค่า KRI ที่เป็น Amber/Red: AI ตรวจว่าคำอธิบายบอกสาเหตุ ผลกระทบ และการแก้ไขครบหรือไม่</li>' +
+      '<li>AI เสนอเท่านั้น ผู้ใช้ต้องตรวจทานและกดบันทึกเอง · ' + esc(d.provider) + ' / ' + esc(d.model) + '</li></ul></div></div>';
+    html += '<h2>ผลตรวจรายความเสี่ยง</h2><div class="card table-wrap"><table id="tblAi"><thead><tr><th>Risk ID</th><th>แผนก</th><th>ความเสี่ยง</th><th>Residual</th><th>คะแนน</th><th>สรุปจาก AI</th><th>ตรวจเมื่อ</th></tr></thead><tbody>' +
+      (d.rows.length ? d.rows.slice().sort(function (a, b) { return (a.score === null ? -1 : a.score) - (b.score === null ? -1 : b.score); }).map(function (r) {
+        return '<tr class="clickable" data-risk="' + esc(r.Risk_ID) + '"><td class="nowrap">' + esc(r.Risk_ID) + '</td><td>' + esc(r.dept) + '</td><td class="desc">' + esc(r.scenario) + '</td><td>' + lvBadge(r.level) +
+          '</td><td data-v="' + (r.score === null ? -1 : r.score) + '">' + gradeBadge(r.score, r.grade, r.stale) + '</td><td class="desc small">' + esc(r.summary) + '</td><td class="small nowrap">' + esc(String(r.reviewedAt).slice(0, 10)) + '</td></tr>';
+      }).join('') : '<tr><td colspan="7" class="muted">ยังไม่มีความเสี่ยง</td></tr>') + '</tbody></table></div>';
+    if (INIT.user.isAdmin) {
+      html += '<h2>การตรวจอัตโนมัติ</h2><div class="section-actions"><button class="btn" id="btnBatch">ตรวจรายการที่ค้างตอนนี้</button><span class="small muted">ครั้งละไม่เกิน AI_BATCH_SIZE รายการ</span></div>' +
+        '<div class="card table-wrap"><table><thead><tr><th>เริ่ม</th><th>Model</th><th class="num">ค้าง</th><th class="num">ตรวจแล้ว</th><th class="num">ผิดพลาด</th><th>ข้อความ</th></tr></thead><tbody>' +
+        (d.runs.length ? d.runs.map(function (r) {
+          return '<tr><td class="nowrap small">' + esc(String(r.Started_At).replace('T', ' ')) + '</td><td class="small">' + esc(r.Model) + '</td><td class="num">' + esc(r.Pending) + '</td><td class="num">' + esc(r.Reviewed) + '</td><td class="num">' + esc(r.Errors) + '</td><td class="small desc">' + esc(r.Message) + '</td></tr>';
+        }).join('') : '<tr><td colspan="6" class="muted">ยังไม่มีประวัติ</td></tr>') + '</tbody></table></div>';
+    }
+    el.innerHTML = html;
+    sortable($('tblAi'));
+    chart('chCrit', {
+      type: 'bar',
+      data: { labels: d.criteria.map(function (c) { return c.name.length > 60 ? c.name.slice(0, 58) + '…' : c.name; }),
+        datasets: [['yes', 'ผ่าน', '--lv-low'], ['partial', 'บางส่วน', '--lv-mod'], ['no', 'ไม่ผ่าน', '--lv-vhigh']].map(function (x) {
+          return { label: x[1], data: d.criteria.map(function (c) { return c[x[0]]; }), backgroundColor: cssVar(x[2]) };
+        }) },
+      options: { indexAxis: 'y', maintainAspectRatio: false, scales: { x: { stacked: true, ticks: { precision: 0 } }, y: { stacked: true, ticks: { font: { size: 11 } } } }, plugins: { legend: { position: 'bottom' } } }
+    });
+    el.onclick = function (ev) { var t = ev.target.closest('[data-risk]'); if (t) openRisk(t.dataset.risk); };
+    if ($('btnBatch')) $('btnBatch').onclick = function () {
+      var b = this; busy(b, true, 'กำลังตรวจ… (อาจใช้เวลาหลายนาที)');
+      call('apiRunAiBatch').then(function (r) { busy(b, false); invalidate(); toast('ตรวจแล้ว ' + r.Reviewed + ' รายการ · ผิดพลาด ' + r.Errors); loadAi(); })
+        .catch(function (e) { busy(b, false); toast(errMsg(e)); });
+    };
+  }
+
+  // ============================ ตั้งค่า (ADMIN) ============================
+  function loadSettings() {
+    var el = $('tab-settings');
+    loadingInto(el);
+    call('apiAdminData').then(renderSettings).catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
+  }
+
+  function renderSettings(d) {
+    var el = $('tab-settings');
+    var s = d.settings;
+    var html = '<div class="section-actions"><a class="btn ghost" href="' + esc(d.dbUrl) + '" target="_blank" rel="noopener">เปิดไฟล์ DB</a><span class="small muted">แก้ Taxonomy และนิยามระดับ (Scale_Definitions) ได้ในไฟล์ DB โดยตรง</span></div>';
+    html += '<h2>ผู้ใช้ <button class="btn ghost" data-newuser="1">+ เพิ่มผู้ใช้</button></h2><div class="card table-wrap"><table id="tblUsers"><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>แผนก</th><th>สถานะ</th></tr></thead><tbody>' +
+      d.users.map(function (u, i) {
+        return '<tr class="clickable" data-user="' + i + '"><td>' + esc(u.Email) + '</td><td>' + esc(u.Name) + '</td><td><span class="badge info">' + esc(u.Role) + '</span></td><td>' + esc(u.Departments) +
+          '</td><td>' + (String(u.Is_Active).toUpperCase() === 'FALSE' ? '<span class="badge bad">ปิด</span>' : '<span class="badge good">ใช้งาน</span>') + '</td></tr>';
+      }).join('') + '</tbody></table></div><p class="small muted">ADMIN = ทุกแผนก + ตั้งค่า · EDITOR = กรอก/แก้แผนกที่ระบุ · VIEWER = ดูอย่างเดียว · แผนกคั่นด้วย , หรือ * = ทุกแผนก</p>';
+    html += '<h2>แผนก <button class="btn ghost" data-newdept="1">+ เพิ่มแผนก</button></h2><div class="card table-wrap"><table><thead><tr><th>รหัส</th><th>ชื่อแผนก (Business unit)</th><th>ผู้อนุมัติ</th><th>สถานะ</th></tr></thead><tbody>' +
+      (d.depts.length ? d.depts.map(function (x, i) {
+        return '<tr class="clickable" data-deptrow="' + i + '"><td><b>' + esc(x.Dept_Code) + '</b></td><td>' + esc(x.Dept_Name) + '</td><td>' + esc(x.Approver_Email || '–') + '</td><td>' +
+          (String(x.Is_Active).toUpperCase() === 'FALSE' ? '<span class="badge bad">ปิด</span>' : '<span class="badge good">ใช้งาน</span>') + '</td></tr>';
+      }).join('') : '<tr><td colspan="4" class="muted">ยังไม่มีแผนก</td></tr>') + '</tbody></table></div>';
+    html += '<h2>ค่าระบบ</h2><div class="card" id="setForm">' +
+      '<div class="form-row"><label>งวดประเมินปัจจุบัน</label><input type="text" data-s="ASSESSMENT_PERIOD" value="' + esc(s.ASSESSMENT_PERIOD) + '" placeholder="2026 หรือ 2026-H2"></div>' +
+      '<div class="form-row"><label>กำหนดกรอก KRI (วันที่ของเดือนถัดไป)</label><input type="number" min="1" max="28" data-s="KRI_DUE_DAY" value="' + esc(s.KRI_DUE_DAY) + '"></div>' +
+      '<div class="form-row"><label>วันที่ส่งอีเมลเตือน (คั่นด้วย ,)</label><input type="text" data-s="REMINDER_DAYS" value="' + esc(s.REMINDER_DAYS) + '"></div>' +
+      '<div class="form-row"><label>แจ้งแผนใกล้ครบกำหนดล่วงหน้า (วัน)</label><input type="number" data-s="MITIGATION_WARN_DAYS" value="' + esc(s.MITIGATION_WARN_DAYS) + '"></div>' +
+      '<div class="form-row"><label>AI provider</label><select data-s="AI_PROVIDER">' + ['claude', 'openai', 'gemini'].map(function (p) {
+        return '<option value="' + p + '"' + (s.AI_PROVIDER === p ? ' selected' : '') + '>' + p + (d.keys[p] ? ' ✓ มี API key' : ' — ยังไม่มี API key') + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="form-row"><label>AI model (ว่าง = ค่าตั้งต้น)</label><input type="text" data-s="AI_MODEL" value="' + esc(s.AI_MODEL === d.defaultModels[s.AI_PROVIDER] ? '' : s.AI_MODEL) + '" placeholder="' + esc(d.defaultModels[s.AI_PROVIDER]) + '"></div>' +
+      '<div class="form-row"><label>AI effort (Claude)</label><select data-s="AI_EFFORT">' + opt(['low', 'medium', 'high'], s.AI_EFFORT) + '</select></div>' +
+      '<div class="form-row"><label>จำกัดการใช้ AI ต่อคนต่อวัน</label><input type="number" data-s="AI_DAILY_LIMIT" value="' + esc(s.AI_DAILY_LIMIT) + '"></div>' +
+      '<div class="form-row"><label>จำนวนที่ AI ตรวจต่อรอบอัตโนมัติ</label><input type="number" data-s="AI_BATCH_SIZE" value="' + esc(s.AI_BATCH_SIZE) + '"></div>' +
+      '<div class="form-row"><label>เกณฑ์คะแนน AI ที่ผ่าน</label><input type="number" data-s="SCORE_THRESHOLD" value="' + esc(s.SCORE_THRESHOLD) + '"></div>' +
+      '<div class="section-actions"><button class="btn" id="btnSaveSet">บันทึกค่าระบบ</button></div></div>';
+    html += '<h2>เกณฑ์ที่ AI ใช้ตรวจ</h2><div class="grid cols-2">' +
+      '<div class="card"><h3>Risk Register (1 เกณฑ์ต่อบรรทัด)</h3><textarea id="critRISK" style="width:100%;min-height:240px">' + esc(d.criteria.RISK) + '</textarea><div class="section-actions"><button class="btn" data-savecrit="RISK">บันทึก</button><span class="small muted">แก้แล้ว Risk ทั้งหมดจะถูกตรวจใหม่อัตโนมัติ</span></div></div>' +
+      '<div class="card"><h3>คำอธิบายค่า KRI ที่เป็น Amber/Red</h3><textarea id="critKRI_COMMENT" style="width:100%;min-height:240px">' + esc(d.criteria.KRI_COMMENT) + '</textarea><div class="section-actions"><button class="btn" data-savecrit="KRI_COMMENT">บันทึก</button></div></div></div>';
+    html += '<h2>นำเข้าข้อมูลจาก Google Sheet เดิม</h2><div class="card"><div class="form-row"><label>ลิงก์ Sheet (ต้องมีชีต RISK_REGISTER)</label><input type="text" id="impUrl" placeholder="https://docs.google.com/spreadsheets/d/…"></div>' +
+      '<div class="form-row"><label>งวดประเมิน (ถ้าแถวไม่ระบุ)</label><input type="text" id="impPeriod" value="' + esc(s.ASSESSMENT_PERIOD) + '"></div>' +
+      '<div class="section-actions"><button class="btn" id="btnImport">นำเข้า</button><span class="small muted">ข้าม Risk ID ที่มีอยู่แล้ว · สร้างแผนกจาก Business unit ให้อัตโนมัติ · KRI ที่นำเข้าเป็นแบบเชิงคุณภาพ</span></div><div id="impMsg"></div></div>';
+    html += '<h2>Export ทุกแผนก</h2><div class="card section-actions"><button class="btn ghost" id="btnExportAll">⇩ Export งวด ' + esc(state.period) + ' ทุกแผนก</button></div>';
+    el.innerHTML = html;
+    sortable($('tblUsers'));
+
+    el.onclick = function (ev) {
+      var t = ev.target.closest('[data-user],[data-newuser],[data-deptrow],[data-newdept],[data-savecrit]');
+      if (!t) return;
+      if (t.dataset.newuser || t.dataset.user !== undefined) return editUser(t.dataset.user !== undefined ? d.users[Number(t.dataset.user)] : null, d);
+      if (t.dataset.newdept || t.dataset.deptrow !== undefined) return editDept(t.dataset.deptrow !== undefined ? d.depts[Number(t.dataset.deptrow)] : null);
+      if (t.dataset.savecrit) {
+        busy(t, true);
+        call('apiSaveCriteria', [t.dataset.savecrit, $('crit' + t.dataset.savecrit).value]).then(function () { busy(t, false); invalidate(); toast('บันทึกเกณฑ์แล้ว'); })
+          .catch(function (e) { busy(t, false); toast(errMsg(e)); });
+      }
+    };
+    $('btnSaveSet').onclick = function () {
+      var o = {};
+      Array.prototype.forEach.call(el.querySelectorAll('[data-s]'), function (x) { o[x.getAttribute('data-s')] = x.value; });
+      var b = this; busy(b, true);
+      call('apiSaveSettings', [o]).then(function () { busy(b, false); toast('บันทึกแล้ว — กำลังโหลดใหม่'); setTimeout(function () { location.reload(); }, 800); })
+        .catch(function (e) { busy(b, false); toast(errMsg(e)); });
+    };
+    $('btnImport').onclick = function () {
+      var b = this; busy(b, true, 'กำลังนำเข้า…');
+      call('apiImportLegacy', [$('impUrl').value, $('impPeriod').value]).then(function (r) {
+        busy(b, false); invalidate();
+        $('impMsg').innerHTML = '<div class="warn-box">นำเข้า ' + r.risks + ' ความเสี่ยง, ' + r.kris + ' KRI · ข้าม ' + r.skipped + ' (มี Risk ID แล้ว)' +
+          (r.deptsCreated.length ? '\nสร้างแผนกใหม่: ' + r.deptsCreated.map(esc).join(', ') + '\n→ ตรวจรหัส/ชื่อ และกำหนดผู้อนุมัติ' : '') + '\n' + esc(r.note) + '</div>';
+      }).catch(function (e) { busy(b, false); $('impMsg').innerHTML = '<div class="err-box">' + esc(errMsg(e)) + '</div>'; });
+    };
+    $('btnExportAll').onclick = function () { doExport('', state.period, this); };
+  }
+
+  function editUser(u, d) {
+    var isNew = !u;
+    u = u || { Role: 'EDITOR', Is_Active: 'TRUE' };
+    openDrawer(isNew ? 'เพิ่มผู้ใช้' : 'แก้ไขผู้ใช้',
+      '<div class="f"><label>อีเมล</label><input type="email" id="uEmail" value="' + esc(u.Email) + '"></div>' +
+      '<div class="f"><label>ชื่อ</label><input type="text" id="uName" value="' + esc(u.Name) + '"></div>' +
+      '<div class="f"><label>Role</label><select id="uRole">' + opt(INIT.lists.roles, u.Role) + '</select></div>' +
+      '<div class="f"><label>แผนก (รหัสคั่นด้วย , หรือ * = ทุกแผนก) — มี: ' + esc(d.depts.map(function (x) { return x.Dept_Code; }).join(', ')) + '</label><input type="text" id="uDepts" value="' + esc(u.Departments) + '"></div>' +
+      '<div class="f"><label>สถานะ</label><select id="uActive">' + opt([{ v: 'TRUE', t: 'ใช้งาน' }, { v: 'FALSE', t: 'ปิด' }], String(u.Is_Active).toUpperCase() === 'FALSE' ? 'FALSE' : 'TRUE') + '</select></div>' +
+      '<div class="f"><label>หมายเหตุ</label><input type="text" id="uNote" value="' + esc(u.Note) + '"></div>',
+      '<button class="btn" id="uSave">บันทึก</button>');
+    $('uSave').onclick = function () {
+      var b = this; busy(b, true);
+      call('apiSaveUser', [{ Email: $('uEmail').value, Name: $('uName').value, Role: $('uRole').value, Departments: $('uDepts').value, Is_Active: $('uActive').value, Note: $('uNote').value }, isNew ? '' : u.Email])
+        .then(function (r) { closeDrawer(); renderSettings(r); toast('บันทึกแล้ว'); })
+        .catch(function (e) { busy(b, false); toast(errMsg(e)); });
+    };
+  }
+
+  function editDept(x) {
+    var isNew = !x;
+    x = x || { Is_Active: 'TRUE' };
+    openDrawer(isNew ? 'เพิ่มแผนก' : 'แก้ไขแผนก ' + esc(x.Dept_Code),
+      '<div class="f"><label>รหัสแผนก (A-Z, 0-9 — ใช้เป็นส่วนหน้าของ Risk ID เช่น FIN-R-001)</label><input type="text" id="dCode" value="' + esc(x.Dept_Code) + '"' + (isNew ? '' : ' disabled') + '></div>' +
+      '<div class="f"><label>ชื่อแผนก (Business unit)</label><input type="text" id="dName" value="' + esc(x.Dept_Name) + '"></div>' +
+      '<div class="f"><label>อีเมลผู้อนุมัติ</label><input type="email" id="dAppr" value="' + esc(x.Approver_Email) + '"></div>' +
+      '<div class="f"><label>สถานะ</label><select id="dActive">' + opt([{ v: 'TRUE', t: 'ใช้งาน' }, { v: 'FALSE', t: 'ปิด' }], String(x.Is_Active).toUpperCase() === 'FALSE' ? 'FALSE' : 'TRUE') + '</select></div>',
+      '<button class="btn" id="dSave">บันทึก</button>');
+    $('dSave').onclick = function () {
+      var b = this; busy(b, true);
+      call('apiSaveDept', [{ Dept_Code: $('dCode').value, Dept_Name: $('dName').value, Approver_Email: $('dAppr').value, Is_Active: $('dActive').value }, isNew ? '' : x.Dept_Code])
+        .then(function (r) { closeDrawer(); renderSettings(r); toast('บันทึกแล้ว — โหลดหน้าใหม่เพื่อให้รายการแผนกอัปเดต'); })
+        .catch(function (e) { busy(b, false); toast(errMsg(e)); });
+    };
+  }
+
+  // ---------------- events ----------------
+  $('tabs').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-tab]');
+    if (b) showTab(b.getAttribute('data-tab'));
+  });
+  $('selDept').addEventListener('change', function () { state.dept = this.value; if (state.dept) kriDept = state.dept; showTab(state.tab); });
+  $('selPeriod').addEventListener('change', function () { state.period = this.value; showTab(state.tab); });
+  $('btnRefresh').addEventListener('click', function () { invalidate(); showTab(state.tab); });
+  function tryClose() {
+    if (form && form.dirty && form.canEdit && !confirm('มีการแก้ไขที่ยังไม่บันทึก — ปิดหรือไม่?')) return;
+    closeDrawer();
+  }
+  $('drawerClose').addEventListener('click', tryClose);
+  $('scrim').addEventListener('click', tryClose);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('drawer').classList.contains('hidden')) tryClose(); });
+  window.addEventListener('beforeunload', function (e) { if (form && form.dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+  start();
+})();
+</script>

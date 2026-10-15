@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet">
+  <?!= include_('ui/Styles'); ?>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <div class="title">Risk Register &amp; KRI</div>
+        <div class="sub" id="subtitle">กำลังโหลด…</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <select id="selDept" title="แผนก"></select>
+      <select id="selPeriod" title="งวดประเมิน"></select>
+      <span class="who"><?= userName ?></span>
+      <button class="btn ghost" id="btnRefresh" title="โหลดข้อมูลใหม่">↻</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="register">Risk Register</button>
+    <button data-tab="kri">กรอกค่า KRI <span class="pill" id="kriPill"></span></button>
+    <button data-tab="approval">ส่ง / อนุมัติ</button>
+    <button data-tab="ai">AI ตรวจคุณภาพ</button>
+    <button data-tab="settings" id="tabSettings" class="hidden">ตั้งค่า</button>
+  </nav>
+
+  <main>
+    <div id="loading" class="loading"><div class="spinner"></div>กำลังโหลด…</div>
+    <div id="error" class="error hidden"></div>
+    <section id="tab-dashboard" class="tab"></section>
+    <section id="tab-register" class="tab hidden"></section>
+    <section id="tab-kri" class="tab hidden"></section>
+    <section id="tab-approval" class="tab hidden"></section>
+    <section id="tab-ai" class="tab hidden"></section>
+    <section id="tab-settings" class="tab hidden"></section>
+  </main>
+
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <div id="drawerTitle"></div>
+      <div class="drawer-actions">
+        <span id="drawerActions" class="drawer-actions"></span>
+        <button class="btn ghost" id="drawerClose" title="ปิด">✕</button>
+      </div>
+    </div>
+    <div id="drawerBody" class="drawer-body"></div>
+  </aside>
+  <div id="scrim" class="scrim hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <?!= include_('ui/App'); ?>
+</body>
+</html>
