@@ -9,7 +9,7 @@ function riskScore_(impact, likelihood) {
   return i && l ? i * l : null;
 }
 
-/** ระดับความเสี่ยงตามชีต MATRIX: Low 1–6 / Moderate 7–11 / High 12–19 / Very High 20–25 */
+/** ระดับความเสี่ยงตามเกณฑ์บริษัท: Low 1–6 / Medium 7–11 / High 12–19 / Very High 20–25 */
 function riskLevel_(score) {
   if (!score) return null;
   for (var i = 0; i < RISK_LEVELS.length; i++) {
@@ -109,6 +109,10 @@ function normalizeRisk_(input) {
   });
   r.Mitigation_Due_Date = isoDate_(r.Mitigation_Due_Date);
   if (MITIGATION_STATUSES.indexOf(r.Mitigation_Status) < 0) r.Mitigation_Status = r.Mitigation_Plan ? 'Not Started' : '';
+  if (ASSESS_MODES.indexOf(r.Assess_Mode) < 0) r.Assess_Mode = 'New Risk';
+  if (REVIEW_WINDOWS.indexOf(r.Review_Window) < 0) r.Review_Window = '';
+  r.Incident_Count = num_(r.Incident_Count) === null || num_(r.Incident_Count) < 0 ? '' : Math.round(num_(r.Incident_Count));
+  r.Impact_Dimensions = IMPACT_DIMENSIONS.filter(function (d) { return splitList_(r.Impact_Dimensions).indexOf(d) >= 0; }).join(', ');
   var is = riskScore_(r.Inherent_Impact, r.Inherent_Likelihood);
   var rs = riskScore_(r.Residual_Impact, r.Residual_Likelihood);
   r.Inherent_Score = is || '';
@@ -149,6 +153,14 @@ function validateRisk_(r, kris, taxonomy, todayIso) {
     if (!r.Mitigation_Due_Date) errors.push('ความเสี่ยงระดับ ' + r.Residual_Level + ' ต้องระบุกำหนดเสร็จของแผน');
   }
   if (r.Mitigation_Plan && !r.Mitigation_Due_Date) warnings.push('ยังไม่ระบุกำหนดเสร็จของ Mitigation plan');
+  var ctl = parseControls_(r.Existing_Control);
+  if (r.Existing_Control && !(ctl.Preventive || ctl.Detective || ctl.Corrective)) {
+    warnings.push('Exiting control ควรแยกเป็น Preventive / Detective / Corrective พร้อมระบุใครทำ ความถี่ และหลักฐาน');
+  }
+  if (r.Assess_Mode === 'Reassessment') {
+    var miss = missingIntake_(r);
+    if (miss.length) warnings.push('Reassessment ยังขาดข้อมูลประกอบคะแนน: ' + miss.map(function (m) { return m.label; }).join(', '));
+  }
   if (r.Inherent_Score && r.Residual_Score && Number(r.Residual_Score) > Number(r.Inherent_Score)) {
     warnings.push('Residual risk สูงกว่า Inherent risk — ตรวจสอบระดับอีกครั้ง');
   }
@@ -201,4 +213,59 @@ function deptCodeFromName_(name, existing) {
   var code = base, n = 2;
   while ((existing || []).indexOf(code) >= 0) code = base + (n++);
   return code;
+}
+
+// ============================ Exiting control (P/D/C) ============================
+
+var CONTROL_TYPES = ['Preventive', 'Detective', 'Corrective'];
+
+/** แยกข้อความ control ที่เขียนเป็น "Preventive: …\nDetective: …\nCorrective: …" — ข้อความที่ไม่อยู่ใต้หัวข้อเก็บไว้ใน Other */
+function parseControls_(text) {
+  var out = { Preventive: '', Detective: '', Corrective: '', Other: '' };
+  var cur = 'Other';
+  String(text || '').split(/\r?\n/).forEach(function (line) {
+    var m = line.match(/^\s*(?:[-•*]\s*)?(Preventive|Detective|Corrective|ป้องกัน|ตรวจจับ|แก้ไข)\s*(?:\([^)]*\))?\s*[:：]\s*(.*)$/i);
+    if (m) {
+      var k = m[1].toLowerCase();
+      cur = k === 'ป้องกัน' ? 'Preventive' : k === 'ตรวจจับ' ? 'Detective' : k === 'แก้ไข' ? 'Corrective' : k.charAt(0).toUpperCase() + k.slice(1);
+      line = m[2];
+    }
+    out[cur] = out[cur] ? out[cur] + '\n' + line : line;
+  });
+  Object.keys(out).forEach(function (k) { out[k] = out[k].trim(); });
+  return out;
+}
+
+function joinControls_(c) {
+  var lines = [];
+  if (c && str_(c.Other)) lines.push(str_(c.Other));
+  CONTROL_TYPES.forEach(function (k) { if (c && str_(c[k])) lines.push(k + ': ' + str_(c[k])); });
+  return lines.join('\n');
+}
+
+// ============================ ข้อมูลขั้นต่ำก่อนให้คะแนน ============================
+
+/**
+ * ข้อมูลที่ยังขาดก่อนให้ AI แนะนำคะแนน (กันการเดา)
+ * New Risk     : เหตุการณ์ / ผลกระทบ / ความถี่ / control ที่มี
+ * Reassessment : R2 ความเสี่ยงเดิม, R3 ช่วงเวลา, R4 เหตุการณ์จริง + ตัวอย่าง, R5 มิติที่กระทบจริง, R6 control ที่ทำจริง (P/D/C)
+ */
+function missingIntake_(r) {
+  var miss = [];
+  function need(field, label, question) { miss.push({ field: field, label: label, question: question }); }
+  var ctl = parseControls_(r.Existing_Control);
+  var hasCtl = !!(ctl.Preventive || ctl.Detective || ctl.Corrective || ctl.Other);
+  if (!str_(r.Risk_Scenario)) need('Risk_Scenario', 'เหตุการณ์ความเสี่ยง', 'เหตุการณ์ความเสี่ยงคืออะไร (อะไรอาจเกิดขึ้น กับอะไร/ใคร)?');
+  if (r.Assess_Mode === 'Reassessment') {
+    if (!str_(r.Review_Window)) need('Review_Window', 'ช่วงเวลาที่ทบทวน (R3)', 'ทบทวนข้อมูลช่วงใด: ไตรมาสล่าสุด / 6 เดือน / 1 ปี?');
+    if (num_(r.Incident_Count) === null) need('Incident_Count', 'จำนวนเหตุการณ์จริง/near miss (R4)', 'ในช่วงเวลาดังกล่าวเกิดเหตุการณ์จริงหรือ near miss กี่ครั้ง?');
+    else if (num_(r.Incident_Count) > 0 && !str_(r.Incident_Examples)) need('Incident_Examples', 'ตัวอย่างเหตุการณ์ (R4)', 'ยกตัวอย่างเหตุการณ์ 1–2 เคส (เกิดอะไร เมื่อไร เสียหายเท่าไร)');
+    if (!str_(r.Impact_Dimensions)) need('Impact_Dimensions', 'มิติที่กระทบจริง (R5)', 'ผลกระทบจริงที่เกิดอยู่ในมิติใด (Financial / Legal & Compliance / Reputation / Operations / ESG) อย่างน้อย 1–2 มิติ?');
+    if (!(ctl.Preventive || ctl.Detective || ctl.Corrective)) need('Existing_Control', 'Exiting control ที่ทำจริง แยก P/D/C (R6)', 'ปัจจุบันมีมาตรการควบคุมอะไรที่ทำจริง แยกเป็น Preventive / Detective / Corrective — ใครทำ ทำถี่แค่ไหน มีหลักฐานอะไร (checklist, log, report, ticket, approval record)?');
+  } else {
+    if (!str_(r.Consequences) && !str_(r.Impact_Dimensions)) need('Consequences', 'ผลกระทบ', 'ถ้าเกิดเหตุการณ์นี้ จะกระทบอะไรบ้าง และกระทบมิติใด (การเงิน ประมาณกี่บาท/กี่ % ของกำไร, กฎหมาย, ชื่อเสียง, การปฏิบัติงาน, ESG)?');
+    if (num_(r.Incident_Count) === null && !str_(r.Incident_Examples)) need('Incident_Examples', 'ความถี่/ข้อมูลการเกิด', 'ที่ผ่านมาเคยเกิดขึ้นบ่อยแค่ไหน (กี่ครั้งต่อปี) หรือมีข้อมูลอะไรบอกโอกาสเกิด?');
+    if (!hasCtl) need('Existing_Control', 'Exiting control', 'ปัจจุบันมีมาตรการควบคุมอะไรอยู่แล้วบ้าง (ถ้ายังไม่มีให้ระบุว่า "ยังไม่มี") — ใครทำ ทำถี่แค่ไหน มีหลักฐานอะไร?');
+  }
+  return miss;
 }

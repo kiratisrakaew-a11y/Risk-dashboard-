@@ -63,10 +63,12 @@ function apiInit() {
       return { type: str_(t.Risk_Type), l2: str_(t.L2_Domain), subtype: str_(t.Risk_Subtype), desc: str_(t.Description_TH) };
     }).filter(function (t) { return t.type && t.subtype; }),
     scales: Db.readAll('Scale_Definitions').map(function (s) {
-      return { dimension: s.Dimension, level: Number(s.Level), label: str_(s.Label), desc: str_(s.Description) };
+      return { dimension: s.Dimension, level: Number(s.Level), sub: str_(s.Sub_Dimension), label: str_(s.Label), desc: str_(s.Description) };
     }),
     levels: RISK_LEVELS,
-    lists: { kriTypes: KRI_TYPES, frequencies: FREQUENCIES, directions: DIRECTIONS, mitigationStatuses: MITIGATION_STATUSES, roles: ROLES },
+    lists: { kriTypes: KRI_TYPES, frequencies: FREQUENCIES, directions: DIRECTIONS, mitigationStatuses: MITIGATION_STATUSES, roles: ROLES,
+      assessModes: ASSESS_MODES, reviewWindows: REVIEW_WINDOWS, impactDimensions: IMPACT_DIMENSIONS },
+    disclaimer: DISCLAIMER,
     labels: FIELD_LABELS,
     cfg: { ASSESSMENT_PERIOD: cfg.ASSESSMENT_PERIOD, KRI_DUE_DAY: cfg.KRI_DUE_DAY, SCORE_THRESHOLD: cfg.SCORE_THRESHOLD,
       MITIGATION_WARN_DAYS: cfg.MITIGATION_WARN_DAYS, aiEnabled: !!PropertiesService.getScriptProperties().getProperty(API_KEY_PROPS[cfg.AI_PROVIDER]) },
@@ -538,7 +540,7 @@ function apiSaveDept(obj, originalCode) {
   var code = str_(obj && obj.Dept_Code).toUpperCase();
   if (!/^[A-Z0-9_]{2,12}$/.test(code)) throw new Error('รหัสแผนกใช้ A-Z, 0-9, _ ยาว 2-12 ตัว');
   var row = { Dept_Code: code, Dept_Name: str_(obj.Dept_Name), Approver_Email: str_(obj.Approver_Email).toLowerCase(),
-    Is_Active: isActive_(obj.Is_Active) ? 'TRUE' : 'FALSE' };
+    Is_Active: isActive_(obj.Is_Active) ? 'TRUE' : 'FALSE', Description: str_(obj.Description) };
   Db.withLock(function () {
     var key = str_(originalCode || code).toUpperCase();
     var hit = Db.readAll('Departments').filter(function (x) { return str_(x.Dept_Code).toUpperCase() === key; })[0];

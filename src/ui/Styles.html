@@ -142,7 +142,7 @@
   /* ---------- Risk Register ---------- */
   .top-actions select { max-width: 220px; }
   .lv { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--on-level); white-space: nowrap; }
-  .lv-Low { background: var(--lv-low); } .lv-Moderate { background: var(--lv-mod); }
+  .lv-Low { background: var(--lv-low); } .lv-Medium { background: var(--lv-mod); }
   .lv-High { background: var(--lv-high); } .lv-Very-High { background: var(--lv-vhigh); }
   .rag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; }
   .rag::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
@@ -182,6 +182,12 @@
   .sugg .sugg-head { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
   .sugg .txt { white-space: pre-wrap; }
   .msg-list { margin: 6px 0 0; padding-left: 18px; }
+  .hint-box { white-space: pre-line; }
+  .disclaimer { font-size: 11px; color: var(--muted); margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0; }
+  .checks label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; color: var(--text); }
+  .ctl-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+  .dimrow { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .warn-box { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; white-space: pre-wrap; }
   .err-box { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; white-space: pre-wrap; }
   .kri-entry td { vertical-align: top; }

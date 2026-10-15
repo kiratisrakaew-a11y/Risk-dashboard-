@@ -42,16 +42,33 @@ function setup() {
   if (!Db.readAll('Users').length && me) {
     Db.append('Users', [{ Email: me, Name: me.split('@')[0], Role: 'ADMIN', Departments: '*', Is_Active: 'TRUE', Note: 'สร้างโดย setup()' }]);
   }
-  if (!Db.readAll('Departments').length) {
-    Db.append('Departments', DEPARTMENT_SEED.map(function (d) { return { Dept_Code: d[0], Dept_Name: d[1], Approver_Email: '', Is_Active: 'TRUE' }; }));
+  // หน่วยงาน: เพิ่มรายการตามเกณฑ์บริษัทที่ยังไม่มี และปิดรหัสรุ่นก่อนที่ยังไม่มี Risk
+  var sync = planDeptSync_(Db.readAll('Departments'), Db.readAll('Risks'));
+  Db.append('Departments', sync.add.map(function (d) { return { Dept_Code: d[0], Dept_Name: d[1], Approver_Email: '', Is_Active: 'TRUE', Description: '' }; }));
+  sync.retire.forEach(function (row) { row.Is_Active = 'FALSE'; Db.update('Departments', row._row, row); });
+  if (sync.add.length || sync.retire.length) console.log('หน่วยงาน: เพิ่ม ' + sync.add.length + ' / ปิด ' + sync.retire.length);
+  // นิยามระดับ: ใส่เกณฑ์บริษัทถ้ายังว่าง หรือยังเป็นข้อความทั่วไปของรุ่นแรก (ถ้า ADMIN แก้เองแล้วจะไม่ทับ)
+  var scales = Db.readAll('Scale_Definitions');
+  if (!scales.length || isOldScaleSeed_(scales)) {
+    var sh = Db.sheet('Scale_Definitions');
+    if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+    Db.clearMemo();
+    Db.append('Scale_Definitions', scaleSeed_().map(function (r) { return { Dimension: r[0], Level: r[1], Sub_Dimension: r[2], Label: r[3], Description: r[4] }; }));
+    console.log('ใส่นิยามระดับตามเกณฑ์ Risk Impact & Likelihood ของบริษัทแล้ว');
   }
-  if (!Db.readAll('Scale_Definitions').length) {
-    Db.append('Scale_Definitions', scaleSeed_().map(function (r) { return { Dimension: r[0], Level: r[1], Label: r[2], Description: r[3] }; }));
-  }
-  if (!Db.readAll('AI_Criteria').length) {
+  var crit = Db.readAll('AI_Criteria');
+  if (!crit.length) {
     Db.append('AI_Criteria', Object.keys(AI_DEFAULT_CRITERIA).map(function (k) {
       return { Scope: k, Criteria: AI_DEFAULT_CRITERIA[k].join('\n'), Is_Active: 'TRUE', Note: '1 เกณฑ์ต่อบรรทัด — แก้ได้ในหน้า ตั้งค่า' };
     }));
+  } else {
+    crit.forEach(function (r) {
+      if (str_(r.Scope).toUpperCase() === 'RISK' && String(r.Criteria || '').indexOf(OLD_RISK_CRITERIA_FIRST_LINE) === 0) {
+        r.Criteria = AI_DEFAULT_CRITERIA.RISK.join('\n');
+        r.Note = 'อัปเดตเป็นเกณฑ์ตาม instruction ของบริษัทโดย setup()';
+        Db.update('AI_Criteria', r._row, r);
+      }
+    });
   }
   var cfg = getConfig_();
   if (!Db.readAll('Taxonomy').length) {
@@ -63,7 +80,28 @@ function setup() {
   try { copyReferenceSheets_(ss, cfg.TEMPLATE_ID); } catch (e) { console.warn('คัดลอกชีตอ้างอิงไม่ได้: ' + e.message); }
   installTriggers_();
   console.log('DB: ' + ss.getUrl());
-  console.log('ขั้นต่อไป: ตรวจรายชื่อแผนกในชีต Departments (ใส่ไว้ 15 หน่วยงาน) เติมอีเมลผู้อนุมัติ / เพิ่มผู้ใช้ในชีต Users (หรือในหน้า ตั้งค่า ของ Web App) แล้ว Deploy เป็น Web app');
+  console.log('ขั้นต่อไป: ตรวจรายชื่อแผนกในชีต Departments (23 หน่วยงาน) เติมคำอธิบายหน้าที่ (Description) และอีเมลผู้อนุมัติ / เพิ่มผู้ใช้ในชีต Users (หรือในหน้า ตั้งค่า ของ Web App) แล้ว Deploy เป็น Web app');
+}
+
+/** แผนปรับรายชื่อหน่วยงาน (pure): add = [code, name] ที่ยังไม่มี, retire = แถวรหัสรุ่นก่อนที่ยัง active และยังไม่มี Risk */
+function planDeptSync_(deptRows, riskRows) {
+  var have = {}, used = {};
+  (deptRows || []).forEach(function (d) { have[str_(d.Dept_Code).toUpperCase()] = true; });
+  (riskRows || []).forEach(function (r) { used[str_(r.Business_Unit).toUpperCase()] = true; });
+  return {
+    add: DEPARTMENT_SEED.filter(function (d) { return !have[d[0]]; }),
+    retire: (deptRows || []).filter(function (d) {
+      var c = str_(d.Dept_Code).toUpperCase();
+      return RETIRED_DEPT_CODES.indexOf(c) >= 0 && isActive_(d.Is_Active) && !used[c];
+    })
+  };
+}
+
+/** นิยามระดับยังเป็นข้อความทั่วไปของรุ่นแรกทุกแถว (ยังไม่ได้แก้เอง) */
+function isOldScaleSeed_(rows) {
+  return rows.length > 0 && rows.every(function (r) {
+    return OLD_SCALE_SEED_PREFIXES.some(function (p) { return str_(r.Description).indexOf(p) === 0; });
+  });
 }
 
 function ensureSheet_(ss, name, cols) {

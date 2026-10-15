@@ -4,7 +4,7 @@ const G = require('./load')();
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 test('riskScore_ / riskLevel_ ตรงกับชีต MATRIX ทุกช่อง', () => {
-  const expect = (s) => (s <= 6 ? 'Low' : s <= 11 ? 'Moderate' : s <= 19 ? 'High' : 'Very High');
+  const expect = (s) => (s <= 6 ? 'Low' : s <= 11 ? 'Medium' : s <= 19 ? 'High' : 'Very High');
   for (let i = 1; i <= 5; i++) for (let l = 1; l <= 5; l++) {
     const s = G.riskScore_(i, l);
     assert.equal(s, i * l);
@@ -164,10 +164,60 @@ test('legacyRowToRisk_ / riskToLegacyRow_ แปลงไป-กลับคอ�
   assert.equal(out[27], '• L1: ≥ 10 %');
 });
 
-test('DEPARTMENT_SEED: 15 หน่วยงานตาม Risk report Log รหัสไม่ซ้ำและใช้ได้กับ apiSaveDept', () => {
-  assert.equal(G.DEPARTMENT_SEED.length, 15);
+test('DEPARTMENT_SEED: 23 หน่วยงานตาม instruction รหัสไม่ซ้ำและใช้ได้กับ apiSaveDept', () => {
+  assert.equal(G.DEPARTMENT_SEED.length, 23);
   const codes = G.DEPARTMENT_SEED.map((d) => d[0]);
-  assert.equal(new Set(codes).size, 15);
+  assert.equal(new Set(codes).size, 23);
   codes.forEach((c) => assert.match(c, /^[A-Z0-9_]{2,12}$/));
-  assert.ok(G.DEPARTMENT_SEED.some((d) => d[1] === 'THAILAND PRIVILEGE CARD & IBD'));
+  assert.ok(G.DEPARTMENT_SEED.some((d) => d[1] === 'Executive Office (Investor Relations)'));
+  G.RETIRED_DEPT_CODES.forEach((c) => assert.ok(!codes.includes(c)));
+});
+
+test('planDeptSync_: เพิ่มที่ขาด ปิดรหัสรุ่นก่อนที่ยังไม่มี Risk', () => {
+  const rows = [{ Dept_Code: 'DM', Is_Active: 'TRUE' }, { Dept_Code: 'SALES', Is_Active: 'TRUE' }, { Dept_Code: 'TPCIBD', Is_Active: 'FALSE' }, { Dept_Code: 'LEGAL', Is_Active: 'TRUE' }];
+  const p = G.planDeptSync_(rows, [{ Business_Unit: 'SALES' }]);
+  assert.equal(p.add.length, 22);                              // ทุกตัวยกเว้น LEGAL
+  assert.deepEqual(p.retire.map((r) => r.Dept_Code), ['DM']); // SALES มี Risk, TPCIBD ปิดอยู่แล้ว
+});
+
+test('scaleSeed_: เกณฑ์บริษัท Impact 5 มิติ × 5 ระดับ + Likelihood 5 ระดับ; ตรวจ seed รุ่นแรกได้', () => {
+  const rows = G.scaleSeed_();
+  assert.equal(rows.filter((r) => r[0] === 'Impact').length, 25);
+  assert.equal(rows.filter((r) => r[0] === 'Likelihood').length, 5);
+  assert.ok(rows.some((r) => r[0] === 'Impact' && r[1] === 3 && r[2] === 'Reputation' && /ไม่เกิน 3 วัน/.test(r[4])));
+  const old = ['ผลกระทบน้อยมาก แก้ไขได้ทันทีในระดับ', 'แทบจะไม่เกิด (น้อยกว่า 1 ครั้งใน 5 ปี)'].map((d) => ({ Description: d }));
+  assert.equal(G.isOldScaleSeed_(old), true);
+  assert.equal(G.isOldScaleSeed_(old.concat([{ Description: 'ADMIN แก้เอง' }])), false);
+  assert.equal(G.isOldScaleSeed_(rows.map((r) => ({ Description: r[4] }))), false);
+});
+
+test('parseControls_ / joinControls_: แยก-รวม P/D/C ไป-กลับ และรองรับหัวข้อภาษาไทย', () => {
+  const c = G.parseControls_('ข้อความเดิม\nPreventive: ตรวจซีล\nทุกเดือน\nตรวจจับ: ระบบแจ้งเตือน\n- Corrective (แก้ไข): ทีมเวร 24 ชม.');
+  assert.equal(c.Other, 'ข้อความเดิม');
+  assert.equal(c.Preventive, 'ตรวจซีล\nทุกเดือน');
+  assert.equal(c.Detective, 'ระบบแจ้งเตือน');
+  assert.equal(c.Corrective, 'ทีมเวร 24 ชม.');
+  const t = G.joinControls_({ Preventive: 'a', Detective: '', Corrective: 'c' });
+  assert.equal(t, 'Preventive: a\nCorrective: c');
+  assert.deepEqual(plain(G.parseControls_(t)), { Preventive: 'a', Detective: '', Corrective: 'c', Other: '' });
+});
+
+test('missingIntake_: New Risk ต้องมีเหตุการณ์/ผลกระทบ/ความถี่/control; Reassessment ต้องมี R2–R6', () => {
+  const nr = (o) => plain(G.missingIntake_(G.normalizeRisk_(Object.assign({ Assess_Mode: 'New Risk' }, o))).map((m) => m.field));
+  assert.deepEqual(nr({}), ['Risk_Scenario', 'Consequences', 'Incident_Examples', 'Existing_Control']);
+  assert.deepEqual(nr({ Risk_Scenario: 's', Impact_Dimensions: 'ESG', Incident_Count: 0, Existing_Control: 'ยังไม่มี' }), []);
+  const ra = (o) => plain(G.missingIntake_(G.normalizeRisk_(Object.assign({ Assess_Mode: 'Reassessment', Risk_Scenario: 's' }, o))).map((m) => m.field));
+  assert.deepEqual(ra({ Review_Window: '1 ปี', Incident_Count: 2, Impact_Dimensions: 'Operations', Existing_Control: 'ระบบแจ้งเตือน' }),
+    ['Incident_Examples', 'Existing_Control']);                // มีเหตุการณ์ต้องมีตัวอย่าง; control ต้องแยก P/D/C
+  assert.deepEqual(ra({ Review_Window: '1 ปี', Incident_Count: 0, Impact_Dimensions: 'Operations', Existing_Control: 'Detective: แจ้งเตือน' }), []);
+});
+
+test('normalizeRisk_: ฟิลด์ข้อมูลประกอบคะแนน', () => {
+  const r = G.normalizeRisk_({ Assess_Mode: 'xx', Review_Window: '6 เดือน', Incident_Count: '3.4', Impact_Dimensions: 'ESG, Financial, Bogus' });
+  assert.equal(r.Assess_Mode, 'New Risk');
+  assert.equal(r.Review_Window, '6 เดือน');
+  assert.equal(r.Incident_Count, 3);
+  assert.equal(r.Impact_Dimensions, 'Financial, ESG');
+  assert.equal(G.normalizeRisk_({ Incident_Count: '-1' }).Incident_Count, '');
+  assert.match(G.validateRisk_(G.normalizeRisk_({ Assess_Mode: 'Reassessment', Existing_Control: 'x' }), [], []).warnings.join(), /Preventive \/ Detective/);
 });

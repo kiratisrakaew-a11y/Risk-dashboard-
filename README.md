@@ -15,7 +15,7 @@ Web App (Google Apps Script) ให้แต่ละหน่วยงานก
 | ตั้งค่า (ADMIN) | ผู้ใช้, แผนก, งวดประเมิน, AI provider/model, เกณฑ์ที่ AI ใช้ตรวจ, นำเข้าข้อมูลจาก Sheet เดิม, Export ทุกแผนก |
 
 ### ระดับความเสี่ยง (ตามชีต MATRIX เดิม)
-คะแนน = Impact × Likelihood แบ่งเป็น **Low** 1–6 (Working group), **Moderate** 7–11 (CEO & MD), **High** 12–19 (RMC) และ **Very High** 20–25 (RMC & BOD)
+คะแนน = Impact × Likelihood แบ่งเป็น **Low** 1–6 (Working group), **Medium** 7–11 (CEO & MD), **High** 12–19 (RMC) และ **Very High** 20–25 (RMC & BOD)
 ความเสี่ยงที่ Residual อยู่ระดับ High ขึ้นไป ต้องมี Mitigation plan และวันที่กำหนดเสร็จ ไม่อย่างนั้นจะบันทึกไม่ได้
 
 ### KRI
@@ -24,10 +24,20 @@ Web App (Google Apps Script) ให้แต่ละหน่วยงานก
 - เมื่อ KRI เป็น Red ระบบส่งอีเมลแจ้ง ADMIN และผู้อนุมัติของแผนก
 - ทุกวัน 08:00 ในวันที่ที่ตั้งไว้ใน `REMINDER_DAYS` ระบบส่งอีเมลเตือน KRI ที่ยังไม่กรอก และแผนที่ใกล้หรือเลยกำหนด ไปยังผู้รับผิดชอบ KRI (หรือ EDITOR ของแผนก ถ้าไม่ได้ระบุผู้รับผิดชอบ)
 
-### AI ช่วยเขียนและช่วยตรวจ
+### AI ช่วยเขียนและช่วยตรวจ (ตาม instruction ของบริษัท)
+กติกาหลักที่ AI ทุกปุ่มยึด:
+- ประเมิน Impact ตาม **5 มิติ** (Financial / Legal & Compliance / Reputation / Operations / ESG) และ**ใช้มิติที่สูงสุด** เป็น Impact; Likelihood ใช้เกณฑ์ความถี่/% ของบริษัท (ชีต `Scale_Definitions`)
+- **ไม่เดาคะแนนเมื่อข้อมูลไม่พอ** — ถามกลับแทน:
+  - **New Risk** ต้องมี เหตุการณ์ / ผลกระทบ / ความถี่ / control ที่มี
+  - **Reassessment** (ความเสี่ยงเดิม) ต้องมี ช่วงเวลาที่ทบทวน, เหตุการณ์จริง/near miss + ตัวอย่าง, มิติที่กระทบจริง และ control ที่ทำจริงแยก P/D/C
+  - ถ้าข้อมูลขั้นต่ำยังไม่ครบ ระบบจะแสดงคำถามโดย**ไม่เรียก AI** เลย
+- **Exiting control** แยก Preventive / Detective / Corrective (ฟอร์มมี 3 ช่อง บันทึกรวมเป็นคอลัมน์เดียวตามไฟล์เดิม) พร้อมใครทำ ความถี่ หลักฐาน
+- Residual สูงกว่า **Medium** ต้องมี Mitigation plan ที่ลดลงมาอย่างน้อย Medium (ระบุลด Impact หรือ Likelihood)
+- ทุกผลจาก AI มี disclaimer ของบริษัท และเป็นคำแนะนำเชิงแนวปฏิบัติ ไม่ใช่คำปรึกษากฎหมาย
+
 - **✨ AI ช่วยร่าง:** พิมพ์อธิบายความเสี่ยงสั้นๆ แล้ว AI จะร่างทุกช่อง เสนอระดับพร้อมเหตุผลตามนิยามระดับ และเสนอ KRI 2–3 ตัวพร้อมเกณฑ์
   ประเภทความเสี่ยงที่เสนอต้องมีอยู่ใน Taxonomy ถ้าไม่มี ระบบจะล้างค่าทิ้งให้ผู้ใช้เลือกเอง และถ้าเกณฑ์ KRI ขัดกัน ระบบจะเปลี่ยน KRI นั้นเป็นแบบเชิงคุณภาพ
-- **🎯 AI แนะนำคะแนน:** AI เทียบเนื้อหาความเสี่ยงกับนิยามระดับ (ชีต `Scale_Definitions`) แล้วแนะนำ Impact และ Likelihood ทั้ง Inherent และ Residual พร้อมเหตุผลที่ใส่ลงช่อง Rationale ได้ทันที
+- **🎯 AI แนะนำคะแนน:** AI ให้คะแนน Impact รายมิติ (ระบบเลือกมิติที่สูงสุดเอง) และ Likelihood ทั้ง Inherent และ Residual พร้อมเหตุผลที่ใส่ลงช่อง Rationale ได้ทันที
   ฟอร์มแสดงคู่กับคะแนนที่เลือกไว้ (ช่องที่ต่างกันเป็นสีส้ม) พร้อมระดับความมั่นใจ และบอกว่าควรหาข้อมูลอะไรเพิ่ม ระบบไม่ยอมให้ Residual สูงกว่า Inherent
 - **✨ AI ปรับข้อความ:** ให้ AI เกลาข้อความในช่องที่เขียนไว้แล้ว ทีละช่อง
 - **🔍 AI ตรวจ:** ประเมินทีละเกณฑ์เป็น ผ่าน / บางส่วน / ไม่ผ่าน แล้ว**ระบบคิดคะแนนเอง** (ผ่าน = 1, บางส่วน = 0.5) ได้เกรด A ≥ 85, B ≥ 70, C ≥ 50, D < 50
@@ -60,13 +70,13 @@ Web App (Google Apps Script) ให้แต่ละหน่วยงานก
    - สร้างไฟล์ **"Risk Register — DB"** และเก็บ `DB_ID` ไว้ใน Script Properties
    - นำเข้า Taxonomy จากชีต `RISK TAXONOMY` ของ template
    - คัดลอกชีต MATRIX และ Impact & Likelihood มาไว้อ้างอิง
-   - ใส่แผนก 15 หน่วยงานตาม "Risk report Log" (Digital Media, Billboard Production, Value Management, Airport & Seven-Eleven Media, Street-Bus, Operation Intelligence, Street - Operation Support, Performance Marketing, Legal, Sales, Purchasing, People, Signboard Tax, THAILAND PRIVILEGE CARD & IBD, Street Static) โดยยังไม่ใส่อีเมลผู้อนุมัติ
+   - ใส่ 23 หน่วยงานตาม instruction ของบริษัท (CXM, IBD, TPC, Performance Marketing, Sales & CS, Sunbeam, VM, Accounting & Finance, Executive Office (IR), IT, Legal, People, Purchasing, Airport & 7-11 Media, Billboard – Operation, Billboard – Production, Business Development & Asset, Digital – Production, Street – Operation Support, Operational Intelligence, Signboard Tax, Street – Bus, Street – Static) โดยยังไม่ใส่อีเมลผู้อนุมัติ — รันซ้ำจะเพิ่มที่ขาด และปิดรหัสรุ่นก่อน (DM, SALES, TPCIBD) ที่ยังไม่มี Risk
+   - ใส่นิยาม Impact 5 มิติ × 5 ระดับ และ Likelihood ตามเกณฑ์บริษัท (ถ้ายังเป็นข้อความทั่วไปของรุ่นแรกจะแทนให้ ถ้าแก้เองแล้วจะไม่ทับ)
    - เพิ่มบัญชีของคุณเป็น ADMIN
    - ติดตั้ง trigger รายชั่วโมงและรายวัน
 
    รัน `setup` ซ้ำได้โดยข้อมูลไม่หาย ใช้ซ่อมคอลัมน์หรือชีตที่หายไป
-4. **ตรวจนิยามระดับ:** เปิดไฟล์ DB ชีต `Scale_Definitions` แล้วแก้คำอธิบาย Impact และ Likelihood ระดับ 1–5 ให้ตรงกับชีต `Ref_Impact_Likelihood` ที่คัดลอกมาจาก template
-   ค่าเริ่มต้นในชีตเป็นข้อความทั่วไป และทั้งฟอร์มกับ AI ใช้นิยามจากชีตนี้
+4. **ตรวจนิยามระดับและหน่วยงาน:** ชีต `Scale_Definitions` มีเกณฑ์บริษัทแล้ว (แก้ได้) และควรเติมคอลัมน์ `Description` ในชีต `Departments` (หน้าที่ของแต่ละหน่วยงาน) เพราะ AI ใช้ประกอบการแนะนำ
 5. เติมอีเมลผู้อนุมัติของแต่ละแผนก และเพิ่มผู้ใช้ในหน้า **ตั้งค่า** ของ Web App (หรือแก้ในชีต `Departments` และ `Users` โดยตรงก็ได้)
 6. (ไม่บังคับ) นำเข้าข้อมูลจาก Sheet เดิม ได้ 2 ทาง:
    - หน้า ตั้งค่า → นำเข้า (วางลิงก์ Sheet)
@@ -85,7 +95,7 @@ Web App (Google Apps Script) ให้แต่ละหน่วยงานก
 | ชีต | ใช้ทำอะไร |
 |---|---|
 | `Users`, `Departments` | สิทธิ์ผู้ใช้ และแผนกพร้อมผู้อนุมัติ |
-| `Risks` | Risk Register (คอลัมน์ตาม Sheet เดิม และมี Version กับผู้แก้ไขล่าสุด) |
+| `Risks` | Risk Register (คอลัมน์ตาม Sheet เดิม + ข้อมูลประกอบคะแนน: โหมด, ช่วงเวลาที่ทบทวน, จำนวน/ตัวอย่างเหตุการณ์, มิติที่กระทบ, Version และผู้แก้ไขล่าสุด) |
 | `KRIs`, `KRI_Values` | นิยาม KRI และค่ารายงวด |
 | `Approvals` | สถานะส่งและอนุมัติต่อแผนกต่องวด |
 | `Taxonomy`, `Scale_Definitions` | ประเภทความเสี่ยง และนิยามระดับ 1–5 |

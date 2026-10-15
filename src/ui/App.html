@@ -60,7 +60,7 @@
     return null;
   }
   function levelColor(key) {
-    return cssVar({ 'Low': '--lv-low', 'Moderate': '--lv-mod', 'High': '--lv-high', 'Very High': '--lv-vhigh' }[key] || '--border');
+    return cssVar({ 'Low': '--lv-low', 'Medium': '--lv-mod', 'High': '--lv-high', 'Very High': '--lv-vhigh' }[key] || '--border');
   }
   function lvBadge(key, score) {
     if (!key) return '<span class="badge">–</span>';
@@ -89,8 +89,36 @@
       (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
   }
   function scaleText(dim, level) {
-    var s = INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(level); })[0];
-    return s ? s.desc : '';
+    return INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(level); })
+      .map(function (s) { return (s.sub ? s.sub + ': ' : '') + s.desc; }).join('\n');
+  }
+  function disclaimer() { return '<div class="disclaimer">' + esc(INIT.disclaimer) + '</div>'; }
+  // ---- Exiting control แยก Preventive / Detective / Corrective (ตรงกับ parseControls_ / joinControls_ ฝั่ง server) ----
+  var CTL = ['Preventive', 'Detective', 'Corrective'];
+  var CTL_HINT = {
+    Preventive: 'ป้องกันไม่ให้เกิด — ทำอะไร / ใครทำ / ทำถี่แค่ไหน / หลักฐาน (checklist, approval record)',
+    Detective: 'ตรวจพบเมื่อเกิด — ทำอะไร / ใครทำ / ทำถี่แค่ไหน / หลักฐาน (log, report, monitoring)',
+    Corrective: 'แก้ไขเมื่อเกิดแล้ว — ทำอะไร / ใครทำ / ภายในกี่ชั่วโมง / หลักฐาน (ticket, incident report)'
+  };
+  function parseControls(text) {
+    var out = { Preventive: '', Detective: '', Corrective: '', Other: '' }, cur = 'Other';
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var m = line.match(/^\s*(?:[-•*]\s*)?(Preventive|Detective|Corrective|ป้องกัน|ตรวจจับ|แก้ไข)\s*(?:\([^)]*\))?\s*[:：]\s*(.*)$/i);
+      if (m) {
+        var k = m[1].toLowerCase();
+        cur = k === 'ป้องกัน' ? 'Preventive' : k === 'ตรวจจับ' ? 'Detective' : k === 'แก้ไข' ? 'Corrective' : k.charAt(0).toUpperCase() + k.slice(1);
+        line = m[2];
+      }
+      out[cur] = out[cur] ? out[cur] + '\n' + line : line;
+    });
+    Object.keys(out).forEach(function (k) { out[k] = out[k].trim(); });
+    return out;
+  }
+  function joinControls(c) {
+    var lines = [];
+    if (c.Other && c.Other.trim()) lines.push(c.Other.trim());
+    CTL.forEach(function (k) { if (c[k] && c[k].trim()) lines.push(k + ': ' + c[k].trim()); });
+    return lines.join('\n');
   }
   function thai(d) { return d ? String(d).slice(0, 10) : '–'; }
   function sortable(tableEl) {
@@ -382,7 +410,7 @@
     var dept = isNew ? (state.dept && deptInfo(state.dept).canEdit ? state.dept : (editableDepts()[0] || {}).code) : String(d.risk.Business_Unit).toUpperCase();
     form = {
       isNew: isNew, dept: dept,
-      risk: isNew ? { Mitigation_Status: '' } : d.risk,
+      risk: isNew ? { Mitigation_Status: '', Assess_Mode: 'New Risk' } : Object.assign({}, d.risk, { Assess_Mode: d.risk.Assess_Mode || 'Reassessment' }),
       kris: isNew ? [] : d.kris,
       canEdit: isNew ? true : (d.canEdit && d.risk.Status !== 'Closed'),
       closed: !isNew && d.risk.Status === 'Closed',
@@ -469,14 +497,28 @@
           (form.canEdit ? '<button type="button" class="linkbtn" data-usef="' + esc(f) + '" data-src="review">ใช้ข้อความนี้</button>' : '') + '</div><div class="txt">' + esc(rv.improved[f]) + '</div></div>';
       }).join('') + '</div>' : '') +
       (rv.reviewedAt ? '<div class="small muted">ตรวจเมื่อ ' + esc(String(rv.reviewedAt).replace('T', ' ')) + (rv.model ? ' · ' + esc(rv.model) : '') + '</div>' : '') +
-      '</div>';
+      disclaimer() + '</div>';
   }
 
   var SCORE_FIELDS = ['Inherent_Impact', 'Inherent_Likelihood', 'Residual_Impact', 'Residual_Likelihood'];
   var CONF_LABEL = { low: 'ต่ำ', medium: 'ปานกลาง', high: 'สูง' };
   function scoreSuggestionHtml(sc) {
     if (!sc) return '';
-    return '<div class="ai-panel" id="scorePanel"><h4>🎯 คะแนนที่ AI แนะนำ <span class="small muted">— ความมั่นใจ ' + esc(CONF_LABEL[sc.confidence] || sc.confidence) + '</span></h4>' +
+    if (sc.status === 'need_info') {
+      return '<div class="ai-panel" id="scorePanel"><h4>🎯 ยังให้คะแนนไม่ได้ — ต้องการข้อมูลเพิ่ม <span class="small muted">(' + esc(form.risk.Assess_Mode) + ')</span></h4>' +
+        '<div class="small" style="margin-bottom:6px">ระบบไม่เดาคะแนนเมื่อข้อมูลยังไม่พอ กรุณาตอบคำถามต่อไปนี้ในฟอร์ม แล้วกด 🎯 อีกครั้ง</div>' +
+        '<ol class="msg-list">' + sc.questions.map(function (q) { return '<li>' + esc(q) + '</li>'; }).join('') + '</ol>' +
+        (sc.guidance ? '<div class="hint-box" style="margin-top:8px"><b>กรอบคิด:</b> ' + esc(sc.guidance) + '</div>' : '') +
+        (sc.missingInfo ? '<div class="small" style="margin-top:6px"><b>ข้อมูลที่ควรเพิ่ม:</b> ' + esc(sc.missingInfo) + '</div>' : '') +
+        '<div class="section-actions">' + ((sc.fields || []).length ? '<button type="button" class="btn ghost" data-gofield="' + esc(sc.fields[0]) + '">ไปที่ช่องที่ต้องกรอก</button>' : '') +
+        '<button type="button" class="btn ghost" data-closescore="1">ปิด</button></div>' + disclaimer() + '</div>';
+    }
+    function dimLine(stage) {
+      var d = sc.byDimension && sc.byDimension[stage];
+      if (!d) return '';
+      return '<div class="dimrow">' + Object.keys(d).map(function (k) { return esc(k) + ' <b>' + (d[k] || '–') + '</b>'; }).join(' · ') + ' → ใช้มิติสูงสุด</div>';
+    }
+    return '<div class="ai-panel" id="scorePanel"><h4>🎯 คะแนนที่ AI แนะนำ <span class="small muted">— ' + esc(form.risk.Assess_Mode) + ' · ความมั่นใจ ' + esc(CONF_LABEL[sc.confidence] || sc.confidence) + '</span></h4>' +
       '<div class="score-line">Inherent ' + lvBadge(sc.inherent.level, sc.inherent.score) + ' &nbsp; Residual ' + lvBadge(sc.residual.level, sc.residual.score) + '</div>' +
       (sc.notes.length ? '<div class="warn-box">' + sc.notes.map(esc).join('\n') + '</div>' : '') +
       '<div class="table-wrap"><table><thead><tr><th>มิติ</th><th>ที่เลือกไว้</th><th>AI แนะนำ</th><th>เหตุผล</th><th></th></tr></thead><tbody>' +
@@ -485,11 +527,11 @@
         var lab = function (v) { var s = INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(v); })[0]; return v ? v + (s ? ' (' + s.label + ')' : '') : '–'; };
         var diff = cur && String(cur) !== String(sug);
         return '<tr><td class="nowrap">' + esc(INIT.labels[f] || f) + '</td><td class="nowrap">' + esc(lab(cur)) + '</td><td class="nowrap"><b' + (diff ? ' style="color:var(--warn)"' : '') + '>' + esc(lab(sug)) + '</b></td>' +
-          '<td class="desc small">' + esc(sc.reasons[f + '_Rationale']) + '</td><td>' + (form.canEdit ? '<button type="button" class="linkbtn" data-usescore="' + f + '">ใช้</button>' : '') + '</td></tr>';
+          '<td class="desc small">' + esc(sc.reasons[f + '_Rationale']) + (dim === 'Impact' ? dimLine(f.split('_')[0]) : '') + '</td><td>' + (form.canEdit ? '<button type="button" class="linkbtn" data-usescore="' + f + '">ใช้</button>' : '') + '</td></tr>';
       }).join('') + '</tbody></table></div>' +
       (sc.missingInfo ? '<div class="small" style="margin-top:6px"><b>ข้อมูลที่ควรเพิ่มเพื่อให้คะแนนแม่นขึ้น:</b> ' + esc(sc.missingInfo) + '</div>' : '') +
       '<div class="section-actions">' + (form.canEdit ? '<button type="button" class="btn" data-useallscore="1">ใช้คะแนนและเหตุผลทั้งหมด</button>' : '') +
-      '<button type="button" class="btn ghost" data-closescore="1">ปิด</button><span class="small muted">"ใช้" = ใส่ระดับและเหตุผลลงช่อง Rationale (แก้ต่อได้)</span></div></div>';
+      '<button type="button" class="btn ghost" data-closescore="1">ปิด</button><span class="small muted">"ใช้" = ใส่ระดับและเหตุผลลงช่อง Rationale (แก้ต่อได้)</span></div>' + disclaimer() + '</div>';
   }
 
   function suggestionHtml(sg) {
@@ -497,6 +539,7 @@
     var fields = Object.keys(sg.risk).filter(function (f) { return sg.risk[f] !== '' && sg.risk[f] !== null; });
     return '<div class="ai-panel" id="suggPanel"><h4>✨ ร่างจาก AI <span class="small muted">— ตรวจและแก้ก่อนใช้ AI ไม่บันทึกให้อัตโนมัติ</span></h4>' +
       (sg.notes && sg.notes.length ? '<div class="warn-box">' + sg.notes.map(esc).join('\n') + '</div>' : '') +
+      (sg.questions && sg.questions.length ? '<div class="small"><b>คำถามเพิ่มเติมจาก AI (ตอบในฟอร์มเพื่อให้ประเมินคะแนนได้)</b><ol class="msg-list">' + sg.questions.map(function (q) { return '<li>' + esc(q) + '</li>'; }).join('') + '</ol></div>' : '') +
       '<div class="section-actions"><button type="button" class="btn" data-useall="1">ใช้ทั้งหมด</button><button type="button" class="btn ghost" data-closesugg="1">ปิด</button></div>' +
       fields.map(function (f) {
         var v = sg.risk[f];
@@ -507,7 +550,7 @@
         var t = k.Direction === 'Qualitative' ? 'เชิงคุณภาพ' : DIR_LABEL[k.Direction] + ' · Amber ' + k.Amber_Threshold + ' · Red ' + k.Red_Threshold;
         return '<div class="sugg"><div class="sugg-head"><span>[' + esc(k.KRI_Type) + '] ' + esc(FREQ_LABEL[k.Frequency]) + '</span><button type="button" class="linkbtn" data-addkri="' + i + '">+ เพิ่ม KRI นี้</button></div>' +
           '<div class="txt"><b>' + esc(k.KRI_Name) + '</b>' + (k.Unit ? ' (' + esc(k.Unit) + ')' : '') + ' — ' + esc(t) + '</div></div>';
-      }).join('') : '') + '</div>';
+      }).join('') : '') + disclaimer() + '</div>';
   }
 
   function renderRiskForm() {
@@ -541,16 +584,37 @@
       '<div class="f"><label>Risk Sub-type</label><select data-f="Risk_Subtype"' + dis + '>' + subtypeOptions(r.Risk_Type, r.Risk_Subtype) + '</select></div></div>' +
       '<div class="hint-box' + (tax && tax.desc ? '' : ' hidden') + '" id="taxHint">' + esc(tax ? tax.desc : '') + '</div>' +
       fieldHtml('Risk_Scenario', 'textarea') + fieldHtml('Risk_Cause', 'textarea') + fieldHtml('Consequences', 'textarea') + '</fieldset>';
+    var reassess = r.Assess_Mode === 'Reassessment';
+    var dimsSel = String(r.Impact_Dimensions || '').split(/\s*,\s*/);
+    html += '<fieldset><legend>ข้อมูลประกอบการให้คะแนน</legend>' +
+      '<div class="small muted" style="margin-bottom:8px">' + (reassess
+        ? 'Reassessment: ต้องกรอกช่วงเวลา เหตุการณ์จริง/near miss มิติที่กระทบจริง และ control ที่ทำจริง (P/D/C) ก่อนให้คะแนน Residual'
+        : 'New Risk: ต้องมีเหตุการณ์ ผลกระทบ ความถี่ที่เคยเกิด/คาดว่าจะเกิด และ control ที่มี ก่อนให้คะแนน') + '</div>' +
+      '<div class="row3">' + fieldHtml('Assess_Mode', 'select', opt(INIT.lists.assessModes, r.Assess_Mode)) +
+      fieldHtml('Review_Window', 'select', '<option value="">–</option>' + opt(INIT.lists.reviewWindows, r.Review_Window)) +
+      fieldHtml('Incident_Count', 'number') + '</div>' +
+      fieldHtml('Incident_Examples', 'textarea') +
+      '<div class="f"><label>' + esc(INIT.labels.Impact_Dimensions) + ' (ใช้มิติที่กระทบสูงสุดเป็น Impact)</label><div class="checks">' +
+      INIT.lists.impactDimensions.map(function (d) {
+        return '<label><input type="checkbox" data-dim="' + esc(d) + '"' + (dimsSel.indexOf(d) >= 0 ? ' checked' : '') + dis + '> ' + esc(d) + '</label>';
+      }).join('') + '</div></div></fieldset>';
     if (INIT.cfg.aiEnabled && (form.canEdit || form.scoreSuggestion)) {
       html += '<div class="section-actions" id="scoreBar">' + (form.canEdit ? '<button type="button" class="btn ghost" id="btnAiScore">🎯 AI แนะนำคะแนน</button>' : '') +
-        '<span class="small muted">AI เทียบเนื้อหากับนิยามระดับ แล้วแนะนำ Impact / Likelihood ทั้ง Inherent และ Residual พร้อมเหตุผล</span></div>';
+        '<span class="small muted">AI เทียบกับเกณฑ์ 5 มิติและ Likelihood ของบริษัท — ถ้าข้อมูลยังไม่พอ จะถามกลับแทนการเดาคะแนน</span></div>';
     }
     html += scoreSuggestionHtml(form.scoreSuggestion);
     html += '<fieldset><legend>2. Inherent risk (ก่อนมีมาตรการควบคุม)</legend><div class="row2">' +
       '<div>' + fieldHtml('Inherent_Impact', 'select', levelOptions('Impact', r.Inherent_Impact)) + '<div class="hint-box" id="hint-Inherent_Impact">' + esc(scaleText('Impact', r.Inherent_Impact) || 'ระดับความรุนแรงของผลกระทบ หากเกิดขึ้นโดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
       '<div>' + fieldHtml('Inherent_Likelihood', 'select', levelOptions('Likelihood', r.Inherent_Likelihood)) + '<div class="hint-box" id="hint-Inherent_Likelihood">' + esc(scaleText('Likelihood', r.Inherent_Likelihood) || 'โอกาส/ความถี่ที่จะเกิด โดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
       '</div>' + scoreLine('Inherent') + '<div class="row2">' + fieldHtml('Inherent_Impact_Rationale', 'textarea') + fieldHtml('Inherent_Likelihood_Rationale', 'textarea') + '</div></fieldset>';
-    html += '<fieldset><legend>3. มาตรการควบคุมที่มีอยู่</legend>' + fieldHtml('Existing_Control', 'textarea') + '</fieldset>';
+    var ctl = parseControls(r.Existing_Control);
+    html += '<fieldset><legend>3. Exiting control (มาตรการควบคุมที่ทำอยู่จริง)</legend>' +
+      '<div class="ctl-head"><span>แยกเป็น Preventive / Detective / Corrective — ระบุใครทำ ทำถี่แค่ไหน และมีหลักฐานอะไร</span>' +
+      (form.canEdit && INIT.cfg.aiEnabled ? '<button type="button" class="linkbtn" data-improve="Existing_Control">✨ AI ปรับข้อความ</button>' : '') + '</div>' +
+      (ctl.Other ? '<div class="f"><label>อื่นๆ (ยังไม่แยกประเภท — ควรย้ายไปช่องด้านล่าง)</label><textarea data-ctl="Other"' + dis + '>' + esc(ctl.Other) + '</textarea></div>' : '') +
+      CTL.map(function (k) {
+        return '<div class="f"><label>' + k + '</label><textarea data-ctl="' + k + '" placeholder="' + esc(CTL_HINT[k]) + '"' + dis + '>' + esc(ctl[k]) + '</textarea></div>';
+      }).join('') + '<div id="ctlSugg"></div></fieldset>';
     html += '<fieldset><legend>4. Residual risk (หลังมีมาตรการควบคุมที่ทำอยู่แล้ว)</legend><div class="row2">' +
       '<div>' + fieldHtml('Residual_Impact', 'select', levelOptions('Impact', r.Residual_Impact)) + '<div class="hint-box" id="hint-Residual_Impact">' + esc(scaleText('Impact', r.Residual_Impact) || 'ความรุนแรงหลังมีมาตรการควบคุมที่ทำอยู่แล้ว') + '</div></div>' +
       '<div>' + fieldHtml('Residual_Likelihood', 'select', levelOptions('Likelihood', r.Residual_Likelihood)) + '<div class="hint-box" id="hint-Residual_Likelihood">' + esc(scaleText('Likelihood', r.Residual_Likelihood) || 'โอกาสเกิดหลังมีมาตรการควบคุมที่ทำอยู่แล้ว') + '</div></div>' +
@@ -572,6 +636,17 @@
   function collectForm() {
     if (!form) return;
     Array.prototype.forEach.call(document.querySelectorAll('#drawerBody [data-f]'), function (el) { form.risk[el.getAttribute('data-f')] = el.value; });
+    var ctlEls = document.querySelectorAll('#drawerBody [data-ctl]');
+    if (ctlEls.length) {
+      var c = {};
+      Array.prototype.forEach.call(ctlEls, function (el) { c[el.getAttribute('data-ctl')] = el.value; });
+      form.risk.Existing_Control = joinControls(c);
+    }
+    var dimEls = document.querySelectorAll('#drawerBody [data-dim]');
+    if (dimEls.length) {
+      form.risk.Impact_Dimensions = Array.prototype.filter.call(dimEls, function (el) { return el.checked; })
+        .map(function (el) { return el.getAttribute('data-dim'); }).join(', ');
+    }
     if ($('fDept')) form.dept = $('fDept').value;
     form.kris = Array.prototype.map.call(document.querySelectorAll('#kriCards .kri-card'), function (card) {
       var i = Number(card.getAttribute('data-ki'));
@@ -593,6 +668,10 @@
         form.risk.Risk_Subtype = '';
         body.querySelector('[data-f="Risk_Subtype"]').innerHTML = subtypeOptions(t.value, '');
         $('taxHint').classList.add('hidden');
+      } else if (f === 'Assess_Mode') {
+        collectForm();
+        form.scoreSuggestion = null;
+        rerenderKeepScroll();
       } else if (f === 'Risk_Subtype') {
         var tax = INIT.taxonomy.filter(function (x) { return x.type === form.risk.Risk_Type && x.subtype === t.value; })[0];
         $('taxHint').textContent = tax ? tax.desc : '';
@@ -656,6 +735,11 @@
         return;
       }
       if (t.dataset.closescore) { collectForm(); form.scoreSuggestion = null; rerenderKeepScroll(); return; }
+      if (t.dataset.gofield) {
+        var target = body.querySelector('[data-f="' + t.dataset.gofield + '"]') || body.querySelector('[data-ctl="Preventive"]') || body.querySelector('[data-dim]');
+        if (target) { target.scrollIntoView({ block: 'center' }); target.focus(); }
+        return;
+      }
     };
     if ($('btnAddKri')) $('btnAddKri').onclick = function () {
       collectForm();
@@ -710,7 +794,7 @@
     busy(btn, true, 'AI กำลังปรับ…');
     call('apiAiSuggest', [{ mode: 'improve', field: f, dept: form.dept, draft: form.risk, kris: form.kris }]).then(function (s) {
       busy(btn, false);
-      var wrap = btn.closest('.f');
+      var wrap = btn.closest('.f') || $('ctlSugg');
       var old = wrap.querySelector('.sugg'); if (old) old.remove();
       var box = document.createElement('div');
       box.className = 'sugg';
@@ -719,7 +803,7 @@
       wrap.appendChild(box);
       box.onclick = function (ev) {
         ev.stopPropagation();
-        if (ev.target.dataset.apply) { wrap.querySelector('[data-f]').value = s.text; form.risk[f] = s.text; form.dirty = true; box.remove(); }
+        if (ev.target.dataset.apply) { collectForm(); form.risk[f] = s.text; form.dirty = true; rerenderKeepScroll(); return; }
         if (ev.target.dataset.dismiss) box.remove();
       };
     }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
@@ -1106,11 +1190,12 @@
       '<div class="f"><label>รหัสแผนก (A-Z, 0-9 — ใช้เป็นส่วนหน้าของ Risk ID เช่น FIN-R-001)</label><input type="text" id="dCode" value="' + esc(x.Dept_Code) + '"' + (isNew ? '' : ' disabled') + '></div>' +
       '<div class="f"><label>ชื่อแผนก (Business unit)</label><input type="text" id="dName" value="' + esc(x.Dept_Name) + '"></div>' +
       '<div class="f"><label>อีเมลผู้อนุมัติ</label><input type="email" id="dAppr" value="' + esc(x.Approver_Email) + '"></div>' +
+      '<div class="f"><label>หน้าที่/งานหลักของหน่วยงาน (AI ใช้ประกอบการแนะนำ)</label><textarea id="dDesc">' + esc(x.Description) + '</textarea></div>' +
       '<div class="f"><label>สถานะ</label><select id="dActive">' + opt([{ v: 'TRUE', t: 'ใช้งาน' }, { v: 'FALSE', t: 'ปิด' }], String(x.Is_Active).toUpperCase() === 'FALSE' ? 'FALSE' : 'TRUE') + '</select></div>',
       '<button class="btn" id="dSave">บันทึก</button>');
     $('dSave').onclick = function () {
       var b = this; busy(b, true);
-      call('apiSaveDept', [{ Dept_Code: $('dCode').value, Dept_Name: $('dName').value, Approver_Email: $('dAppr').value, Is_Active: $('dActive').value }, isNew ? '' : x.Dept_Code])
+      call('apiSaveDept', [{ Dept_Code: $('dCode').value, Dept_Name: $('dName').value, Approver_Email: $('dAppr').value, Is_Active: $('dActive').value, Description: $('dDesc').value }, isNew ? '' : x.Dept_Code])
         .then(function (r) { closeDrawer(); renderSettings(r); toast('บันทึกแล้ว — โหลดหน้าใหม่เพื่อให้รายการแผนกอัปเดต'); })
         .catch(function (e) { busy(b, false); toast(errMsg(e)); });
     };
