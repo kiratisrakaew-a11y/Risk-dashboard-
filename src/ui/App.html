@@ -1032,11 +1032,11 @@
       '<div class="form-row"><label>กำหนดกรอก KRI (วันที่ของเดือนถัดไป)</label><input type="number" min="1" max="28" data-s="KRI_DUE_DAY" value="' + esc(s.KRI_DUE_DAY) + '"></div>' +
       '<div class="form-row"><label>วันที่ส่งอีเมลเตือน (คั่นด้วย ,)</label><input type="text" data-s="REMINDER_DAYS" value="' + esc(s.REMINDER_DAYS) + '"></div>' +
       '<div class="form-row"><label>แจ้งแผนใกล้ครบกำหนดล่วงหน้า (วัน)</label><input type="number" data-s="MITIGATION_WARN_DAYS" value="' + esc(s.MITIGATION_WARN_DAYS) + '"></div>' +
-      '<div class="form-row"><label>AI provider</label><select data-s="AI_PROVIDER">' + ['claude', 'openai', 'gemini'].map(function (p) {
+      '<div class="form-row"><label>AI provider</label><select data-s="AI_PROVIDER">' + ['gemini', 'claude', 'openai'].map(function (p) {
         return '<option value="' + p + '"' + (s.AI_PROVIDER === p ? ' selected' : '') + '>' + p + (d.keys[p] ? ' ✓ มี API key' : ' — ยังไม่มี API key') + '</option>';
       }).join('') + '</select></div>' +
       '<div class="form-row"><label>AI model (ว่าง = ค่าตั้งต้น)</label><input type="text" data-s="AI_MODEL" value="' + esc(s.AI_MODEL === d.defaultModels[s.AI_PROVIDER] ? '' : s.AI_MODEL) + '" placeholder="' + esc(d.defaultModels[s.AI_PROVIDER]) + '"></div>' +
-      '<div class="form-row"><label>AI effort (Claude)</label><select data-s="AI_EFFORT">' + opt(['low', 'medium', 'high'], s.AI_EFFORT) + '</select></div>' +
+      '<div class="form-row"><label>AI effort / thinking level</label><select data-s="AI_EFFORT">' + opt(['low', 'medium', 'high'], s.AI_EFFORT) + '</select></div>' +
       '<div class="form-row"><label>จำกัดการใช้ AI ต่อคนต่อวัน</label><input type="number" data-s="AI_DAILY_LIMIT" value="' + esc(s.AI_DAILY_LIMIT) + '"></div>' +
       '<div class="form-row"><label>จำนวนที่ AI ตรวจต่อรอบอัตโนมัติ</label><input type="number" data-s="AI_BATCH_SIZE" value="' + esc(s.AI_BATCH_SIZE) + '"></div>' +
       '<div class="form-row"><label>เกณฑ์คะแนน AI ที่ผ่าน</label><input type="number" data-s="SCORE_THRESHOLD" value="' + esc(s.SCORE_THRESHOLD) + '"></div>' +

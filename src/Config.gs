@@ -12,9 +12,9 @@ var DEFAULTS = {
   KRI_DUE_DAY: 10,                   // ค่า KRI ของงวดที่ปิดแล้วต้องกรอกภายในวันที่เท่าไหร่ของเดือนถัดไป
   REMINDER_DAYS: '1,5,10',           // วันที่ของเดือนที่ส่งอีเมลเตือน KRI ค้างกรอก
   MITIGATION_WARN_DAYS: 30,          // แผนลดความเสี่ยงที่ครบกำหนดภายในกี่วัน = ใกล้ครบกำหนด
-  AI_PROVIDER: 'claude',             // openai | gemini | claude
+  AI_PROVIDER: 'gemini',             // gemini | claude | openai
   AI_MODEL: '',                      // ว่าง = ใช้ DEFAULT_MODELS[provider]
-  AI_EFFORT: 'low',                  // ใช้กับ Claude เท่านั้น
+  AI_EFFORT: 'low',                  // Claude = effort, Gemini 3 = thinking level (low เร็วกว่า)
   AI_DAILY_LIMIT: 40,                // จำนวนครั้งที่ผู้ใช้ 1 คนเรียก AI ช่วยเขียน/ตรวจ ได้ต่อวัน
   AI_BATCH_SIZE: 15,                 // จำนวน Risk ที่ AI ตรวจต่อรอบอัตโนมัติ
   SCORE_THRESHOLD: 70                // คะแนน AI ต่ำกว่านี้ = ควรปรับปรุง
@@ -22,7 +22,7 @@ var DEFAULTS = {
 
 var DEFAULT_MODELS = {
   openai: 'gpt-4.1-mini',
-  gemini: 'gemini-2.5-flash',
+  gemini: 'gemini-3.1-pro-preview',
   claude: 'claude-opus-5-5'
 };
 

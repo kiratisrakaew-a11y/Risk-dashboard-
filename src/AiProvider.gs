@@ -50,11 +50,16 @@ function aiBuildRequest_(provider, model, apiKey, req, cfg) {
       systemInstruction: { parts: [{ text: req.system }] },
       contents: [{ role: 'user', parts: [{ text: req.user }] }],
       generationConfig: {
-        temperature: 0,
         responseMimeType: 'application/json',
         responseSchema: toGeminiSchema_(req.schema)
       }
     };
+    if (/^gemini-3/.test(model)) {
+      // Gemini 3: ใช้ temperature ค่าเริ่มต้น (ตามคำแนะนำของ Google) และคุมความเร็วด้วย thinking level
+      body.generationConfig.thinkingConfig = { thinkingLevel: cfg && cfg.AI_EFFORT === 'low' ? 'low' : 'high' };
+    } else {
+      body.generationConfig.temperature = 0;
+    }
   } else if (provider === 'claude') {
     url = 'https://api.anthropic.com/v1/messages';
     headers['x-api-key'] = apiKey;

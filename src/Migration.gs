@@ -7,9 +7,9 @@ var SETTING_DESCRIPTIONS = {
   KRI_DUE_DAY: 'ค่า KRI ของงวดที่ปิดแล้วต้องกรอกภายในวันที่เท่าไหร่ของเดือนถัดไป',
   REMINDER_DAYS: 'วันที่ของเดือนที่ส่งอีเมลเตือน KRI ค้างกรอก คั่นด้วย ,',
   MITIGATION_WARN_DAYS: 'แผนลดความเสี่ยงที่ครบกำหนดภายในกี่วัน = ใกล้ครบกำหนด',
-  AI_PROVIDER: 'claude | openai | gemini (API key ตั้งใน Script Properties)',
+  AI_PROVIDER: 'gemini | claude | openai (API key ตั้งใน Script Properties)',
   AI_MODEL: 'ว่าง = ใช้รุ่นตั้งต้นของ provider',
-  AI_EFFORT: 'low | medium | high (เฉพาะ Claude)',
+  AI_EFFORT: 'low | medium | high (Claude = effort, Gemini 3 = thinking level: low = เร็ว, อื่นๆ = high)',
   AI_DAILY_LIMIT: 'จำนวนครั้งที่ผู้ใช้ 1 คนเรียก AI ได้ต่อวัน',
   AI_BATCH_SIZE: 'จำนวนรายการที่ AI ตรวจต่อรอบอัตโนมัติ (ทุกชั่วโมง)',
   SCORE_THRESHOLD: 'คะแนน AI ต่ำกว่านี้ = ควรปรับปรุง'

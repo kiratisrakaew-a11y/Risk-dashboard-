@@ -20,6 +20,18 @@ test('OpenAI: request ใช้ json_schema strict และ parse ได้', (
   assert.throws(() => G.aiParseResponse_('openai', { choices: [{ message: { refusal: 'no' } }] }), /ปฏิเสธ/);
 });
 
+test('Gemini 3: ไม่ตั้ง temperature และใช้ thinkingLevel ตาม AI_EFFORT', () => {
+  const b3 = JSON.parse(G.aiBuildRequest_('gemini', 'gemini-3.1-pro-preview', 'KEY', REQ, { AI_EFFORT: 'low' }).options.payload);
+  assert.equal(b3.generationConfig.temperature, undefined);
+  assert.equal(b3.generationConfig.thinkingConfig.thinkingLevel, 'low');
+  const hi = JSON.parse(G.aiBuildRequest_('gemini', 'gemini-3.1-pro-preview', 'KEY', REQ, { AI_EFFORT: 'medium' }).options.payload);
+  assert.equal(hi.generationConfig.thinkingConfig.thinkingLevel, 'high');
+  const b25 = JSON.parse(G.aiBuildRequest_('gemini', 'gemini-2.5-flash', 'KEY', REQ, {}).options.payload);
+  assert.equal(b25.generationConfig.temperature, 0);
+  assert.equal(b25.generationConfig.thinkingConfig, undefined);
+  assert.equal(G.mergeConfig_({}, {}).AI_MODEL, 'gemini-3.1-pro-preview');
+});
+
 test('Gemini: แปลง schema และ parse ได้', () => {
   const r = G.aiBuildRequest_('gemini', 'gm', 'KEY', REQ, {});
   const body = JSON.parse(r.options.payload);

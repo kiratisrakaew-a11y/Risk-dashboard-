@@ -1,7 +1,7 @@
 # Risk Register & KRI Tracking
 
 Web App (Google Apps Script) ให้แต่ละหน่วยงานกรอก **Risk Register** และติดตาม **Key Risk Indicator (KRI)** แทนการกรอกใน Google Sheet `RISK_REGISTER_TEMPLATE`
-แยกสิทธิ์ตามแผนก และทุกแผนกดู Dashboard ของตัวเองได้ มี **AI ช่วยเขียนและช่วยตรวจ** ด้วย (เลือกใช้ Claude, OpenAI หรือ Gemini ได้)
+แยกสิทธิ์ตามแผนก และทุกแผนกดู Dashboard ของตัวเองได้ มี **AI ช่วยเขียนและช่วยตรวจ** ด้วย (ค่าเริ่มต้น Gemini 3.1 Pro `gemini-3.1-pro-preview` เปลี่ยนเป็น Claude หรือ OpenAI ได้)
 
 ## ความสามารถ
 
@@ -54,7 +54,7 @@ Web App (Google Apps Script) ให้แต่ละหน่วยงานก
 1. สร้างโปรเจกต์ Apps Script แบบ standalone ที่ https://script.google.com แล้วนำโค้ดใน `src/` ไปวาง
    หรือใช้ [clasp](https://github.com/google/clasp): `cp .clasp.json.example .clasp.json` ใส่ scriptId แล้วรัน `npm run push`
 2. **Project Settings → Script Properties** แล้วเพิ่ม API key ของ AI ที่จะใช้ (ใส่เฉพาะตัวที่ใช้ก็พอ):
-   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` หรือ `GEMINI_API_KEY`
+   `GEMINI_API_KEY` (ค่าเริ่มต้น สร้าง key ได้ที่ https://aistudio.google.com/apikey), `ANTHROPIC_API_KEY` หรือ `OPENAI_API_KEY`
    ถ้าไม่ใส่ ระบบยังใช้งานได้ตามปกติ แต่ปุ่ม AI จะถูกซ่อน
 3. เปิด `Migration.gs` เลือกฟังก์ชัน **`setup`** กด Run แล้วอนุญาตสิทธิ์ ฟังก์ชันนี้จะทำสิ่งต่อไปนี้:
    - สร้างไฟล์ **"Risk Register — DB"** และเก็บ `DB_ID` ไว้ใน Script Properties
