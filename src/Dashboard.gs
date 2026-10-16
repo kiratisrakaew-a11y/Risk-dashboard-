@@ -89,8 +89,8 @@ function computeDashboard_(data, opts) {
     if (r.Inherent_Level) kpi.byInherent[r.Inherent_Level] = (kpi.byInherent[r.Inherent_Level] || 0) + 1;
     if (r.Residual_Level) kpi.byResidual[r.Residual_Level] = (kpi.byResidual[r.Residual_Level] || 0) + 1;
     if (levelRank_(r.Residual_Level) >= levelRank_('High')) kpi.highPlus++;
-    var t = str_(r.Risk_Type) || '(ไม่ระบุ)';
-    if (!byType[t]) { byType[t] = { type: t, total: 0 }; RISK_LEVELS.forEach(function (l) { byType[t][l.key] = 0; }); }
+    var tn = str_(r.Risk_Type) || '(ไม่ระบุ)', t = typeKey_(tn); // รวมตัวสะกดต่างกัน (Operational Risk / Operational risk)
+    if (!byType[t]) { byType[t] = { type: tn, total: 0 }; RISK_LEVELS.forEach(function (l) { byType[t][l.key] = 0; }); }
     byType[t].total++;
     if (r.Residual_Level) byType[t][r.Residual_Level]++;
     var a = ai[r.Risk_ID];

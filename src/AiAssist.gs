@@ -436,13 +436,14 @@ function validateSuggestion_(obj, taxonomy) {
     if (!risk[f]) risk[f + '_Rationale'] = '';
   });
   if (taxonomy && taxonomy.length) {
-    var pair = taxonomy.filter(function (t) { return t.Risk_Type === risk.Risk_Type && t.Risk_Subtype === risk.Risk_Subtype; })[0];
+    risk.Risk_Type = canonType_(risk.Risk_Type, typeCanon_(taxonomy));
+    var pair = taxonomy.filter(function (t) { return typeKey_(t.Risk_Type) === typeKey_(risk.Risk_Type) && t.Risk_Subtype === risk.Risk_Subtype; })[0];
     if (!pair) {
       var bySub = taxonomy.filter(function (t) { return t.Risk_Subtype === risk.Risk_Subtype; });
-      if (bySub.length === 1) risk.Risk_Type = bySub[0].Risk_Type;
+      if (bySub.length === 1) risk.Risk_Type = canonType_(bySub[0].Risk_Type, typeCanon_(taxonomy));
       else {
         if (risk.Risk_Type || risk.Risk_Subtype) notes.push('AI เสนอประเภท "' + risk.Risk_Type + ' / ' + risk.Risk_Subtype + '" ซึ่งไม่อยู่ใน Taxonomy — กรุณาเลือกเอง');
-        if (!taxonomy.some(function (t) { return t.Risk_Type === risk.Risk_Type; })) risk.Risk_Type = '';
+        if (!taxonomy.some(function (t) { return typeKey_(t.Risk_Type) === typeKey_(risk.Risk_Type); })) risk.Risk_Type = '';
         risk.Risk_Subtype = '';
       }
     }
@@ -471,21 +472,21 @@ function validateSuggestion_(obj, taxonomy) {
 /** ตัวเลือกประเภทจาก AI → เฉพาะคู่ที่อยู่ใน Taxonomy จริง (ตัดซ้ำ สูงสุด 3) */
 function validateClassify_(obj, taxonomy) {
   var list = Array.isArray(obj && obj.candidates) ? obj.candidates : [];
-  var seen = {}, out = [];
+  var seen = {}, out = [], canon = typeCanon_(taxonomy);
   list.forEach(function (c) {
     if (out.length >= 3) return;
     var type = str_(c && c.risk_type), sub = str_(c && c.risk_subtype);
-    var hit = (taxonomy || []).filter(function (t) { return str_(t.Risk_Type) === type && str_(t.Risk_Subtype) === sub; })[0];
+    var hit = (taxonomy || []).filter(function (t) { return typeKey_(t.Risk_Type) === typeKey_(type) && str_(t.Risk_Subtype) === sub; })[0];
     if (!hit) {
       var bySub = (taxonomy || []).filter(function (t) { return str_(t.Risk_Subtype) === sub; });
       if (bySub.length === 1) hit = bySub[0];
     }
     if (!hit) return;
-    var key = str_(hit.Risk_Type) + '|' + str_(hit.Risk_Subtype);
+    var key = typeKey_(hit.Risk_Type) + '|' + str_(hit.Risk_Subtype);
     if (seen[key]) return;
     seen[key] = true;
     out.push({
-      type: str_(hit.Risk_Type), subtype: str_(hit.Risk_Subtype), l2: str_(hit.L2_Domain), desc: str_(hit.Description_TH),
+      type: canonType_(hit.Risk_Type, canon), subtype: str_(hit.Risk_Subtype), l2: str_(hit.L2_Domain), desc: str_(hit.Description_TH),
       confidence: ['high', 'medium', 'low'].indexOf(c.confidence) >= 0 ? c.confidence : 'low',
       reason: str_(c.reason)
     });

@@ -77,10 +77,30 @@ function setup() {
       console.log('นำเข้า Taxonomy ' + n + ' รายการ');
     } catch (e) { console.warn('นำเข้า Taxonomy ไม่ได้: ' + e.message); }
   }
+  var fixed = normalizeRiskTypes_(me || 'setup');
+  if (fixed) console.log('รวมตัวสะกด Risk Type ให้เป็นแบบเดียวกัน ' + fixed + ' แถว');
   try { copyReferenceSheets_(ss, cfg.TEMPLATE_ID); } catch (e) { console.warn('คัดลอกชีตอ้างอิงไม่ได้: ' + e.message); }
   installTriggers_();
   console.log('DB: ' + ss.getUrl());
   console.log('ขั้นต่อไป: ตรวจรายชื่อแผนกในชีต Departments (23 หน่วยงาน) เติมคำอธิบายหน้าที่ (Description) และอีเมลผู้อนุมัติ / เพิ่มผู้ใช้ในชีต Users (หรือในหน้า ตั้งค่า ของ Web App) แล้ว Deploy เป็น Web app');
+}
+
+/** รวม Risk Type ที่สะกดต่างกันแค่ตัวพิมพ์/ช่องว่าง ให้เป็นชื่อมาตรฐานเดียว ในชีต Taxonomy และ Risks */
+function normalizeRiskTypes_(email) {
+  var canon = typeCanon_(Db.readAll('Taxonomy'));
+  var n = 0;
+  ['Taxonomy', 'Risks'].forEach(function (name) {
+    Db.readAll(name).forEach(function (row) {
+      var c = canonType_(row.Risk_Type, canon);
+      if (c === str_(row.Risk_Type)) return;
+      var before = row.Risk_Type;
+      row.Risk_Type = c;
+      Db.update(name, row._row, row);
+      n++;
+      if (name === 'Risks') Db.audit(email, 'UPDATE', 'Risk', row.Risk_ID, { Risk_Type: before }, { Risk_Type: c });
+    });
+  });
+  return n;
 }
 
 /** แผนปรับรายชื่อหน่วยงาน (pure): add = [code, name] ที่ยังไม่มี, retire = แถวรหัสรุ่นก่อนที่ยัง active และยังไม่มี Risk */
@@ -191,8 +211,10 @@ function importLegacyRegister_(sheetId, defaultPeriod, email) {
     var kriIds = Db.readAll('KRIs').map(function (k) { return k.KRI_ID; });
     var newDepts = [], risks = [], kris = [], skipped = 0;
     var now = Db.now();
+    var canon = typeCanon_(Db.readAll('Taxonomy'));
     values.forEach(function (row) {
       var x = legacyRowToRisk_(row);
+      x.risk.Risk_Type = canonType_(x.risk.Risk_Type, canon);
       if (!x.risk.Risk_Scenario) return;
       var bu = x.businessUnit || 'UNASSIGNED';
       var code = findDept(bu);

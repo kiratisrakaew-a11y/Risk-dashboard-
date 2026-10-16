@@ -135,6 +135,36 @@ function normalizeKri_(input) {
   return k;
 }
 
+/** คีย์เทียบ Risk Type: ไม่สนตัวพิมพ์เล็ก/ใหญ่ ช่องว่างซ้ำ และช่องว่างรอบ "/" ("Operational Risk" = "Operational risk") */
+function typeKey_(s) {
+  return str_(s).toLowerCase().replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' ');
+}
+
+/** key → ชื่อมาตรฐานของ Risk Type จาก Taxonomy: ใช้ตัวสะกดที่มีหลายแถวที่สุด เสมอกันให้ลงท้าย " risk" (ตัวเล็ก) ตามแบบ ESG risk */
+function typeCanon_(taxonomy) {
+  var count = {};
+  (taxonomy || []).forEach(function (t) {
+    var name = str_(t.Risk_Type !== undefined ? t.Risk_Type : t.type);
+    if (!name) return;
+    var k = typeKey_(name);
+    count[k] = count[k] || {};
+    count[k][name] = (count[k][name] || 0) + 1;
+  });
+  var canon = {};
+  Object.keys(count).forEach(function (k) {
+    canon[k] = Object.keys(count[k]).sort(function (a, b) {
+      return (count[k][b] - count[k][a]) || (/ risk$/.test(b) - / risk$/.test(a)) || (a < b ? -1 : a > b ? 1 : 0);
+    })[0];
+  });
+  return canon;
+}
+
+/** แปลงเป็นชื่อมาตรฐาน (ไม่พบใน Taxonomy = คืนค่าเดิม) */
+function canonType_(s, canon) {
+  var v = str_(s);
+  return (v && canon && canon[typeKey_(v)]) || v;
+}
+
 /** taxonomy: [{Risk_Type, Risk_Subtype}] — ว่าง = ไม่ตรวจคู่ Type/Sub-type */
 function validateRisk_(r, kris, taxonomy, todayIso) {
   var errors = [], warnings = [];
@@ -145,7 +175,7 @@ function validateRisk_(r, kris, taxonomy, todayIso) {
     'Residual_Impact', 'Residual_Impact_Rationale', 'Residual_Likelihood', 'Residual_Likelihood_Rationale',
     'Risk_Owner'].forEach(req);
   if (taxonomy && taxonomy.length && r.Risk_Type && r.Risk_Subtype) {
-    var ok = taxonomy.some(function (t) { return t.Risk_Type === r.Risk_Type && t.Risk_Subtype === r.Risk_Subtype; });
+    var ok = taxonomy.some(function (t) { return typeKey_(t.Risk_Type) === typeKey_(r.Risk_Type) && str_(t.Risk_Subtype) === str_(r.Risk_Subtype); });
     if (!ok) errors.push('Risk Sub-type "' + r.Risk_Subtype + '" ไม่อยู่ใน Risk Type "' + r.Risk_Type + '" ตาม Taxonomy');
   }
   if (levelRank_(r.Residual_Level) >= levelRank_('High')) {

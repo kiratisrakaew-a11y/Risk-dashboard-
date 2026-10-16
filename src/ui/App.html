@@ -371,11 +371,15 @@
       .catch(function (e) { el.innerHTML = '<div class="error">' + esc(errMsg(e)) + '</div>'; });
   }
 
+  // คีย์เทียบ Risk Type แบบไม่สนตัวพิมพ์ (เหมือน typeKey_ ฝั่งเซิร์ฟเวอร์)
+  function typeKey(s) { return String(s || '').trim().toLowerCase().replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' '); }
+
   function renderRegister(rows) {
     var el = $('tab-register');
     var multi = !state.dept;
     var types = {};
-    rows.forEach(function (r) { if (r.Risk_Type) types[r.Risk_Type] = 1; });
+    var typeSeen = {};
+    rows.forEach(function (r) { var k = typeKey(r.Risk_Type); if (k && !typeSeen[k]) { typeSeen[k] = 1; types[r.Risk_Type] = 1; } });
     var canAdd = editableDepts().length > 0 && state.period === INIT.cfg.ASSESSMENT_PERIOD;
     var html = '<div class="filters">' +
       '<input type="text" id="fQ" placeholder="ค้นหา Risk ID / คำอธิบาย…" value="' + esc(regFilter.q) + '" style="min-width:220px">' +
@@ -388,7 +392,7 @@
     var list = rows.filter(function (r) {
       if (regFilter.status && (r.Status || 'Active') !== regFilter.status) return false;
       if (regFilter.level && r.Residual_Level !== regFilter.level) return false;
-      if (regFilter.type && r.Risk_Type !== regFilter.type) return false;
+      if (regFilter.type && typeKey(r.Risk_Type) !== typeKey(regFilter.type)) return false;
       if (regFilter.q) {
         var q = regFilter.q.toLowerCase();
         if ((r.Risk_ID + ' ' + r.Risk_Scenario + ' ' + r.Risk_Cause + ' ' + r.Risk_Owner + ' ' + r.Risk_Subtype).toLowerCase().indexOf(q) < 0) return false;
@@ -662,6 +666,10 @@
 
     var types = {};
     INIT.taxonomy.forEach(function (t) { types[t.type] = 1; });
+    if (r.Risk_Type && !types[r.Risk_Type]) { // ข้อมูลเก่าที่สะกดต่างแค่ตัวพิมพ์ → เลือกตัวเลือกมาตรฐาน
+      var tm = Object.keys(types).filter(function (t) { return typeKey(t) === typeKey(r.Risk_Type); })[0];
+      if (tm) r.Risk_Type = tm;
+    }
     var tax = INIT.taxonomy.filter(function (t) { return t.type === r.Risk_Type && t.subtype === r.Risk_Subtype; })[0];
     var html = '';
     if (form.messages) html += form.messages;

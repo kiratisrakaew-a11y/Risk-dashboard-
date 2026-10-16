@@ -262,3 +262,14 @@ test('validateClassify_: เฉพาะคู่ใน Taxonomy, แก้ Type
   assert.match(none.notes[0], /เลือกเอง/);
   assert.equal(G.validateClassify_(null, TAX_FULL).candidates.length, 0);
 });
+
+test('validateClassify_ / validateSuggestion_: Risk Type ต่างตัวพิมพ์ → ชื่อมาตรฐานจาก Taxonomy', () => {
+  const tax = [{ Risk_Type: 'Operational risk', Risk_Subtype: 'A' }, { Risk_Type: 'Operational risk', Risk_Subtype: 'B' }, { Risk_Type: 'Operational Risk', Risk_Subtype: 'C' }];
+  const r = G.validateClassify_({ candidates: [
+    { risk_type: 'Operational Risk', risk_subtype: 'A', confidence: 'high', reason: '' },
+    { risk_type: 'operational risk', risk_subtype: 'C', confidence: 'low', reason: '' }] }, tax);
+  assert.deepEqual([...r.candidates.map((c) => c.type)], ['Operational risk', 'Operational risk']);
+  const s = G.validateSuggestion_({ risk_type: 'OPERATIONAL RISK', risk_subtype: 'C' }, tax);
+  assert.equal(s.risk.Risk_Type, 'Operational risk');
+  assert.equal(s.risk.Risk_Subtype, 'C');
+});

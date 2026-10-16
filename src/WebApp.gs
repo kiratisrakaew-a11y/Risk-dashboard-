@@ -56,11 +56,12 @@ function apiInit() {
   var periods = {};
   periods[cfg.ASSESSMENT_PERIOD] = true;
   Db.readAll('Risks').forEach(function (r) { if (r.Assessment_Period) periods[str_(r.Assessment_Period)] = true; });
+  var canon = typeCanon_(Db.readAll('Taxonomy'));
   return JSON.stringify({
     user: { email: u.email, name: u.name, role: u.role, isAdmin: u.role === 'ADMIN' },
     depts: depts,
     taxonomy: Db.readAll('Taxonomy').map(function (t) {
-      return { type: str_(t.Risk_Type), l2: str_(t.L2_Domain), subtype: str_(t.Risk_Subtype), desc: str_(t.Description_TH) };
+      return { type: canonType_(t.Risk_Type, canon), l2: str_(t.L2_Domain), subtype: str_(t.Risk_Subtype), desc: str_(t.Description_TH) };
     }).filter(function (t) { return t.type && t.subtype; }),
     scales: Db.readAll('Scale_Definitions').map(function (s) {
       return { dimension: s.Dimension, level: Number(s.Level), sub: str_(s.Sub_Dimension), label: str_(s.Label), desc: str_(s.Description) };
@@ -178,6 +179,7 @@ function apiSaveRisk(payload) {
     var period = existing ? str_(existing.Assessment_Period) : String(payload.period || cfg.ASSESSMENT_PERIOD);
     var r = normalizeRisk_(payload.risk);
     if (!existing) r.Assess_Mode = 'New Risk'; // ความเสี่ยงที่เพิ่มใหม่เป็น New Risk เสมอ
+    r.Risk_Type = canonType_(r.Risk_Type, typeCanon_(Db.readAll('Taxonomy')));
     var kris = (payload.kris || []).map(normalizeKri_);
     var v = validateRisk_(r, kris, Db.readAll('Taxonomy').map(function (t) { return { Risk_Type: str_(t.Risk_Type), Risk_Subtype: str_(t.Risk_Subtype) }; }), today_());
     if (v.errors.length) throw new Error('บันทึกไม่ได้:\n• ' + v.errors.join('\n• '));

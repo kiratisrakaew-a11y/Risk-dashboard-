@@ -225,3 +225,30 @@ test('normalizeRisk_: ฟิลด์ข้อมูลประกอบคะ�
   assert.equal(G.normalizeRisk_({ Incident_Count: '-1' }).Incident_Count, '');
   assert.match(G.validateRisk_(G.normalizeRisk_({ Assess_Mode: 'Reassessment', Existing_Control: 'x' }), [], []).warnings.join(), /Preventive \/ Detective/);
 });
+
+test('Risk Type ที่สะกดต่างแค่ตัวพิมพ์ถูกรวมเป็นชื่อเดียว', () => {
+  assert.equal(G.typeKey_('Operational Risk'), G.typeKey_(' operational  risk '));
+  assert.equal(G.typeKey_('Legal/ Regulatory risk'), G.typeKey_('Legal / Regulatory Risk'));
+  const tax = [
+    { Risk_Type: 'Operational risk', Risk_Subtype: 'A' }, { Risk_Type: 'Operational risk', Risk_Subtype: 'B' },
+    { Risk_Type: 'Operational Risk', Risk_Subtype: 'C' }, { Risk_Type: 'ESG risk', Risk_Subtype: 'D' }
+  ];
+  const canon = G.typeCanon_(tax);
+  assert.equal(G.canonType_('Operational Risk', canon), 'Operational risk');
+  assert.equal(G.canonType_('OPERATIONAL RISK', canon), 'Operational risk');
+  assert.equal(G.canonType_('Something else', canon), 'Something else');
+  // เสมอกัน → เลือกแบบลงท้าย " risk"
+  assert.equal(G.canonType_('x', G.typeCanon_([{ Risk_Type: 'Strategic Risk' }, { Risk_Type: 'Strategic risk' }])), 'x');
+  assert.equal(G.typeCanon_([{ Risk_Type: 'Strategic Risk' }, { Risk_Type: 'Strategic risk' }])['strategic risk'], 'Strategic risk');
+  // validateRisk_ ไม่ฟ้อง Taxonomy เพราะตัวพิมพ์ต่างกัน
+  const v = G.validateRisk_({ Risk_Type: 'Operational Risk', Risk_Subtype: 'A' }, [], tax, '2026-10-16');
+  assert.ok(!v.errors.some((e) => /Taxonomy/.test(e)));
+});
+
+test('Dashboard รวมกลุ่ม Risk Type ที่สะกดต่างกัน', () => {
+  const risks = ['Operational Risk', 'Operational risk'].map((t, i) => ({ Risk_ID: 'IT-' + i, Business_Unit: 'IT', Assessment_Period: 'P', Risk_Type: t, Status: 'Active' }));
+  const d = G.computeDashboard_({ risks, kris: [], values: [], depts: [], aiReviews: [] },
+    { cfg: { SCORE_THRESHOLD: 70, DUE_DAY: 10 }, today: '2026-10-16', period: 'P', deptCodes: ['IT'] });
+  assert.equal(d.byType.length, 1);
+  assert.equal(d.byType[0].total, 2);
+});
