@@ -20,6 +20,7 @@
       <select id="selDept" title="แผนก"></select>
       <select id="selPeriod" title="งวดประเมิน"></select>
       <span class="who"><?= userName ?></span>
+      <button class="btn ghost" id="btnScale" title="ตารางเกณฑ์ Impact / Likelihood / Risk matrix">📋 เกณฑ์ประเมิน</button>
       <button class="btn ghost" id="btnRefresh" title="โหลดข้อมูลใหม่">↻</button>
     </div>
   </header>
@@ -55,6 +56,12 @@
     <div id="drawerBody" class="drawer-body"></div>
   </aside>
   <div id="scrim" class="scrim hidden"></div>
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="drawer-head"><div>📋 เกณฑ์การประเมินความเสี่ยงของบริษัท</div><button class="btn ghost" id="modalClose">✕</button></div>
+      <div id="modalBody" class="drawer-body"></div>
+    </div>
+  </div>
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>

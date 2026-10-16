@@ -158,7 +158,7 @@ function validateRisk_(r, kris, taxonomy, todayIso) {
     warnings.push('Exiting control ควรแยกเป็น Preventive / Detective / Corrective พร้อมระบุใครทำ ความถี่ และหลักฐาน');
   }
   if (r.Assess_Mode === 'Reassessment') {
-    var miss = missingIntake_(r);
+    var miss = missingIntake_(r, 'residual');
     if (miss.length) warnings.push('Reassessment ยังขาดข้อมูลประกอบคะแนน: ' + miss.map(function (m) { return m.label; }).join(', '));
   }
   if (r.Inherent_Score && r.Residual_Score && Number(r.Residual_Score) > Number(r.Inherent_Score)) {
@@ -246,26 +246,33 @@ function joinControls_(c) {
 // ============================ ข้อมูลขั้นต่ำก่อนให้คะแนน ============================
 
 /**
- * ข้อมูลที่ยังขาดก่อนให้ AI แนะนำคะแนน (กันการเดา)
- * New Risk     : เหตุการณ์ / ผลกระทบ / ความถี่ / control ที่มี
- * Reassessment : R2 ความเสี่ยงเดิม, R3 ช่วงเวลา, R4 เหตุการณ์จริง + ตัวอย่าง, R5 มิติที่กระทบจริง, R6 control ที่ทำจริง (P/D/C)
+ * ข้อมูลที่ยังขาดก่อนให้ AI แนะนำคะแนน (กันการเดา) — แยกตามขั้นการประเมิน
+ * stage = 'inherent' : เหตุการณ์ / ผลกระทบ (มิติ) / ความถี่-ข้อมูลการเกิด  (ไม่ต้องมี control เพราะประเมินแบบไม่มี control)
+ * stage = 'residual' : ต้องมีคะแนน Inherent ก่อน + control ที่ทำจริงแยก P/D/C
+ *                      Reassessment เพิ่ม R3 ช่วงเวลา, R4 เหตุการณ์จริง + ตัวอย่าง, R5 มิติที่กระทบจริง
  */
-function missingIntake_(r) {
+function missingIntake_(r, stage) {
   var miss = [];
   function need(field, label, question) { miss.push({ field: field, label: label, question: question }); }
   var ctl = parseControls_(r.Existing_Control);
-  var hasCtl = !!(ctl.Preventive || ctl.Detective || ctl.Corrective || ctl.Other);
+  var reassess = r.Assess_Mode === 'Reassessment';
   if (!str_(r.Risk_Scenario)) need('Risk_Scenario', 'เหตุการณ์ความเสี่ยง', 'เหตุการณ์ความเสี่ยงคืออะไร (อะไรอาจเกิดขึ้น กับอะไร/ใคร)?');
-  if (r.Assess_Mode === 'Reassessment') {
-    if (!str_(r.Review_Window)) need('Review_Window', 'ช่วงเวลาที่ทบทวน (R3)', 'ทบทวนข้อมูลช่วงใด: ไตรมาสล่าสุด / 6 เดือน / 1 ปี?');
-    if (num_(r.Incident_Count) === null) need('Incident_Count', 'จำนวนเหตุการณ์จริง/near miss (R4)', 'ในช่วงเวลาดังกล่าวเกิดเหตุการณ์จริงหรือ near miss กี่ครั้ง?');
-    else if (num_(r.Incident_Count) > 0 && !str_(r.Incident_Examples)) need('Incident_Examples', 'ตัวอย่างเหตุการณ์ (R4)', 'ยกตัวอย่างเหตุการณ์ 1–2 เคส (เกิดอะไร เมื่อไร เสียหายเท่าไร)');
-    if (!str_(r.Impact_Dimensions)) need('Impact_Dimensions', 'มิติที่กระทบจริง (R5)', 'ผลกระทบจริงที่เกิดอยู่ในมิติใด (Financial / Legal & Compliance / Reputation / Operations / ESG) อย่างน้อย 1–2 มิติ?');
-    if (!(ctl.Preventive || ctl.Detective || ctl.Corrective)) need('Existing_Control', 'Exiting control ที่ทำจริง แยก P/D/C (R6)', 'ปัจจุบันมีมาตรการควบคุมอะไรที่ทำจริง แยกเป็น Preventive / Detective / Corrective — ใครทำ ทำถี่แค่ไหน มีหลักฐานอะไร (checklist, log, report, ticket, approval record)?');
-  } else {
-    if (!str_(r.Consequences) && !str_(r.Impact_Dimensions)) need('Consequences', 'ผลกระทบ', 'ถ้าเกิดเหตุการณ์นี้ จะกระทบอะไรบ้าง และกระทบมิติใด (การเงิน ประมาณกี่บาท/กี่ % ของกำไร, กฎหมาย, ชื่อเสียง, การปฏิบัติงาน, ESG)?');
-    if (num_(r.Incident_Count) === null && !str_(r.Incident_Examples)) need('Incident_Examples', 'ความถี่/ข้อมูลการเกิด', 'ที่ผ่านมาเคยเกิดขึ้นบ่อยแค่ไหน (กี่ครั้งต่อปี) หรือมีข้อมูลอะไรบอกโอกาสเกิด?');
-    if (!hasCtl) need('Existing_Control', 'Exiting control', 'ปัจจุบันมีมาตรการควบคุมอะไรอยู่แล้วบ้าง (ถ้ายังไม่มีให้ระบุว่า "ยังไม่มี") — ใครทำ ทำถี่แค่ไหน มีหลักฐานอะไร?');
+  if (stage === 'residual') {
+    if (!level_(r.Inherent_Impact) || !level_(r.Inherent_Likelihood)) {
+      need('Inherent_Impact', 'คะแนน Inherent', 'ยังไม่มีคะแนน Inherent — ต้องประเมิน Inherent (ก่อนมีมาตรการควบคุม) ก่อน แล้วจึงประเมิน Residual');
+    }
+    if (!(ctl.Preventive || ctl.Detective || ctl.Corrective)) {
+      need('Existing_Control', 'Exiting control ที่ทำจริง แยก P/D/C' + (reassess ? ' (R6)' : ''), 'ปัจจุบันมีมาตรการควบคุมอะไรที่ทำจริง แยกเป็น Preventive / Detective / Corrective — ใครทำ ทำถี่แค่ไหน มีหลักฐานอะไร (checklist, log, report, ticket, approval record)? ถ้ายังไม่มี control เลย Residual จะเท่ากับ Inherent');
+    }
+    if (reassess) {
+      if (!str_(r.Review_Window)) need('Review_Window', 'ช่วงเวลาที่ทบทวน (R3)', 'ทบทวนข้อมูลช่วงใด: ไตรมาสล่าสุด / 6 เดือน / 1 ปี?');
+      if (num_(r.Incident_Count) === null) need('Incident_Count', 'จำนวนเหตุการณ์จริง/near miss (R4)', 'ในช่วงเวลาดังกล่าวเกิดเหตุการณ์จริงหรือ near miss กี่ครั้ง?');
+      else if (num_(r.Incident_Count) > 0 && !str_(r.Incident_Examples)) need('Incident_Examples', 'ตัวอย่างเหตุการณ์ (R4)', 'ยกตัวอย่างเหตุการณ์ 1–2 เคส (เกิดอะไร เมื่อไร เสียหายเท่าไร)');
+      if (!str_(r.Impact_Dimensions)) need('Impact_Dimensions', 'มิติที่กระทบจริง (R5)', 'ผลกระทบจริงที่เกิดอยู่ในมิติใด (Financial / Legal & Compliance / Reputation / Operations / ESG) อย่างน้อย 1–2 มิติ?');
+    }
+    return miss;
   }
+  if (!str_(r.Consequences) && !str_(r.Impact_Dimensions)) need('Consequences', 'ผลกระทบ', 'ถ้าเกิดเหตุการณ์นี้ จะกระทบอะไรบ้าง และกระทบมิติใด (การเงิน ประมาณกี่บาท/กี่ % ของกำไร, กฎหมาย, ชื่อเสียง, การปฏิบัติงาน, ESG)?');
+  if (num_(r.Incident_Count) === null && !str_(r.Incident_Examples)) need('Incident_Examples', 'ความถี่/ข้อมูลการเกิด', 'ที่ผ่านมาเคยเกิดขึ้นบ่อยแค่ไหน (กี่ครั้งต่อปี) หรือมีข้อมูลอะไรบอกโอกาสเกิด หากไม่มีมาตรการควบคุม?');
   return miss;
 }

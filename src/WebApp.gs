@@ -177,6 +177,7 @@ function apiSaveRisk(payload) {
     if (!activeDepts_().some(function (d) { return str_(d.Dept_Code).toUpperCase() === dept; })) throw new Error('ไม่พบแผนก ' + dept);
     var period = existing ? str_(existing.Assessment_Period) : String(payload.period || cfg.ASSESSMENT_PERIOD);
     var r = normalizeRisk_(payload.risk);
+    if (!existing) r.Assess_Mode = 'New Risk'; // ความเสี่ยงที่เพิ่มใหม่เป็น New Risk เสมอ
     var kris = (payload.kris || []).map(normalizeKri_);
     var v = validateRisk_(r, kris, Db.readAll('Taxonomy').map(function (t) { return { Risk_Type: str_(t.Risk_Type), Risk_Subtype: str_(t.Risk_Subtype) }; }), today_());
     if (v.errors.length) throw new Error('บันทึกไม่ได้:\n• ' + v.errors.join('\n• '));

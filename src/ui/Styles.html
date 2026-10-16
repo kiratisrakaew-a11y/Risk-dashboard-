@@ -185,8 +185,13 @@
   .hint-box { white-space: pre-line; }
   .disclaimer { font-size: 11px; color: var(--muted); margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
   .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0; }
-  .checks label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; color: var(--text); }
+  .checks label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; color: var(--text); white-space: nowrap; }
   .ctl-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 25; display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; }
+  .modal-card { background: var(--surface); border-radius: 12px; width: min(1100px, 100%); max-height: calc(100vh - 80px); display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  .modal-card .drawer-body { overflow-y: auto; }
+  table.scale td { min-width: 140px; }
+  table.scale td:first-child { min-width: 60px; }
   .dimrow { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .warn-box { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; white-space: pre-wrap; }
   .err-box { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; white-space: pre-wrap; }

@@ -92,6 +92,44 @@
     return INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(level); })
       .map(function (s) { return (s.sub ? s.sub + ': ' : '') + s.desc; }).join('\n');
   }
+  // ---- ตารางเกณฑ์ Impact / Likelihood / Risk matrix (เปิดได้จากทุกหน้า) ----
+  function scaleModalHtml(section) {
+    var dims = INIT.lists.impactDimensions;
+    var impact = '<div class="table-wrap"><table class="scale"><thead><tr><th>ระดับ</th>' + dims.map(function (d) { return '<th>' + esc(d) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      [5, 4, 3, 2, 1].map(function (l) {
+        var row = INIT.scales.filter(function (x) { return x.dimension === 'Impact' && x.level === l; });
+        var lab = row[0] ? row[0].label : '';
+        return '<tr><td class="nowrap"><b>' + l + '</b><div class="small muted">' + esc(lab) + '</div></td>' + dims.map(function (d) {
+          var c = row.filter(function (x) { return x.sub === d; })[0] || (row.length === 1 && !row[0].sub ? row[0] : null);
+          return '<td class="small">' + esc(c ? c.desc : '–') + '</td>';
+        }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div><p class="small muted">Impact Score = คะแนนสูงสุดของมิติที่ได้รับผลกระทบจริง</p>';
+    var like = '<div class="table-wrap"><table class="scale"><thead><tr><th>ระดับ</th><th>ความถี่ (Time / Frequency)</th><th>ความน่าจะเป็น (Probability)</th></tr></thead><tbody>' +
+      [5, 4, 3, 2, 1].map(function (l) {
+        var x = INIT.scales.filter(function (y) { return y.dimension === 'Likelihood' && y.level === l; })[0];
+        var parts = String(x ? x.desc : '').split('|');
+        return '<tr><td class="nowrap"><b>' + l + '</b><div class="small muted">' + esc(x ? x.label : '') + '</div></td><td class="small">' + esc((parts[0] || '–').trim()) + '</td><td class="small">' + esc((parts[1] || '').trim()) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    var cells = '';
+    for (var l = 5; l >= 1; l--) {
+      cells += '<div class="ax">' + l + '</div>';
+      for (var i = 1; i <= 5; i++) { var sc = l * i, lv = levelOf(sc); cells += '<div class="cell has" style="background:' + levelColor(lv.key) + ';cursor:default" title="' + lv.key + '">' + sc + '</div>'; }
+    }
+    cells += '<div></div>'; for (var x = 1; x <= 5; x++) cells += '<div class="ax">' + x + '</div>';
+    var matrix = '<div style="max-width:520px"><div class="heat">' + cells + '</div><div class="heat-caption"><span>↑ Likelihood</span><span>Impact →</span></div></div>' +
+      '<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>ระดับ</th><th>คะแนน</th><th>การจัดการ</th><th>รายงาน</th></tr></thead><tbody>' +
+      INIT.levels.slice().reverse().map(function (lv) { return '<tr><td>' + lvBadge(lv.key) + '</td><td class="nowrap">' + lv.min + '–' + lv.max + '</td><td class="small">' + esc(lv.mitigation) + '</td><td class="small nowrap">' + esc(lv.reporting) + '</td></tr>'; }).join('') +
+      '</tbody></table></div>';
+    var tabs = [['impact', 'Impact (5 มิติ)'], ['likelihood', 'Likelihood'], ['matrix', 'Risk matrix']];
+    return '<div class="seg" style="margin-bottom:12px">' + tabs.map(function (t) { return '<button type="button" data-scaletab="' + t[0] + '"' + (t[0] === section ? ' class="active"' : '') + '>' + t[1] + '</button>'; }).join('') + '</div>' +
+      ({ impact: impact, likelihood: like, matrix: matrix }[section] || impact);
+  }
+  function openScale(section) {
+    $('modalBody').innerHTML = scaleModalHtml(section);
+    $('modal').classList.remove('hidden');
+  }
+  function closeScale() { $('modal').classList.add('hidden'); }
+
   function disclaimer() { return '<div class="disclaimer">' + esc(INIT.disclaimer) + '</div>'; }
   // ---- Exiting control แยก Preventive / Detective / Corrective (ตรงกับ parseControls_ / joinControls_ ฝั่ง server) ----
   var CTL = ['Preventive', 'Detective', 'Corrective'];
@@ -242,7 +280,7 @@
       kpi('คะแนนคุณภาพการเขียน (AI)', k.aiAvg === null ? '–' : k.aiAvg, 'ตรวจแล้ว ' + k.aiReviewed + '/' + k.risks + ' · ต่ำกว่าเกณฑ์ ' + k.aiLow, k.aiAvg === null ? '' : k.aiAvg >= INIT.cfg.SCORE_THRESHOLD ? 'good' : 'warn', 'ai') +
       '</div>';
     html += '<div class="grid cols-2" style="margin-top:12px">' +
-      '<div class="card"><h3>Heat map — Inherent risk</h3>' + heatHtml(d.heat.inherent, 'inherent') + '</div>' +
+      '<div class="card"><div class="card-head"><h3>Heat map — Inherent risk</h3><span class="small">' + scaleLinks() + '</span></div>' + heatHtml(d.heat.inherent, 'inherent') + '</div>' +
       '<div class="card"><h3>Heat map — Residual risk</h3>' + heatHtml(d.heat.residual, 'residual') + '</div>' +
       '</div>';
     html += '<div class="grid cols-2" style="margin-top:12px">' +
@@ -500,38 +538,61 @@
       disclaimer() + '</div>';
   }
 
-  var SCORE_FIELDS = ['Inherent_Impact', 'Inherent_Likelihood', 'Residual_Impact', 'Residual_Likelihood'];
   var CONF_LABEL = { low: 'ต่ำ', medium: 'ปานกลาง', high: 'สูง' };
-  function scoreSuggestionHtml(sc) {
+  var STAGE_LABEL = { inherent: 'Inherent', residual: 'Residual' };
+  var EFFECT_LABEL = { reduce_likelihood: 'ลด Likelihood', reduce_impact: 'ลด Impact', both: 'ลดทั้งสองด้าน', none: 'ไม่ลด' };
+  var EFFECTIVE_LABEL = { effective: 'มีประสิทธิผล', partial: 'บางส่วน', ineffective: 'ไม่มีประสิทธิผล' };
+  function scaleLinks(which) {
+    return (which || ['impact', 'likelihood', 'matrix']).map(function (k) {
+      return '<button type="button" class="linkbtn" data-scale="' + k + '">📋 ' + { impact: 'เกณฑ์ Impact', likelihood: 'เกณฑ์ Likelihood', matrix: 'Risk matrix' }[k] + '</button>';
+    }).join(' · ');
+  }
+  function scoreBar(stage) {
+    var can = form.canEdit && INIT.cfg.aiEnabled;
+    var desc = stage === 'inherent'
+      ? 'ประเมินโดยสมมติว่ายังไม่มี control — ใช้ความเสียหายสูงสุดที่สมเหตุสมผล และโอกาสเกิดหากไม่มีการควบคุม'
+      : 'เริ่มจาก Inherent แล้วดูว่า control ที่ทำจริงลดอะไรได้ (Preventive ลดโอกาส, Detective/Corrective ลดผลกระทบ)' + (form.risk.Assess_Mode === 'Reassessment' ? ' และอิงเหตุการณ์จริงในช่วงที่ทบทวน' : '');
+    return '<div class="section-actions" style="margin-top:0">' +
+      (can ? '<button type="button" class="btn ghost" data-aiscore="' + stage + '">🎯 AI แนะนำคะแนน ' + STAGE_LABEL[stage] + '</button>' : '') +
+      '<span class="small muted">' + esc(desc) + '</span></div><div class="small" style="margin:-4px 0 8px">' + scaleLinks() + '</div>' +
+      '<div id="scorePanel-' + stage + '">' + scoreSuggestionHtml(form.scoreSug && form.scoreSug[stage], stage) + '</div>';
+  }
+  function scoreSuggestionHtml(sc, stage) {
     if (!sc) return '';
+    var title = STAGE_LABEL[stage];
     if (sc.status === 'need_info') {
-      return '<div class="ai-panel" id="scorePanel"><h4>🎯 ยังให้คะแนนไม่ได้ — ต้องการข้อมูลเพิ่ม <span class="small muted">(' + esc(form.risk.Assess_Mode) + ')</span></h4>' +
+      return '<div class="ai-panel"><h4>🎯 ยังให้คะแนน ' + title + ' ไม่ได้ — ต้องการข้อมูลเพิ่ม <span class="small muted">(' + esc(form.risk.Assess_Mode) + ')</span></h4>' +
         '<div class="small" style="margin-bottom:6px">ระบบไม่เดาคะแนนเมื่อข้อมูลยังไม่พอ กรุณาตอบคำถามต่อไปนี้ในฟอร์ม แล้วกด 🎯 อีกครั้ง</div>' +
         '<ol class="msg-list">' + sc.questions.map(function (q) { return '<li>' + esc(q) + '</li>'; }).join('') + '</ol>' +
         (sc.guidance ? '<div class="hint-box" style="margin-top:8px"><b>กรอบคิด:</b> ' + esc(sc.guidance) + '</div>' : '') +
         (sc.missingInfo ? '<div class="small" style="margin-top:6px"><b>ข้อมูลที่ควรเพิ่ม:</b> ' + esc(sc.missingInfo) + '</div>' : '') +
         '<div class="section-actions">' + ((sc.fields || []).length ? '<button type="button" class="btn ghost" data-gofield="' + esc(sc.fields[0]) + '">ไปที่ช่องที่ต้องกรอก</button>' : '') +
-        '<button type="button" class="btn ghost" data-closescore="1">ปิด</button></div>' + disclaimer() + '</div>';
+        '<button type="button" class="btn ghost" data-closescore="' + stage + '">ปิด</button></div>' + disclaimer() + '</div>';
     }
-    function dimLine(stage) {
-      var d = sc.byDimension && sc.byDimension[stage];
-      if (!d) return '';
-      return '<div class="dimrow">' + Object.keys(d).map(function (k) { return esc(k) + ' <b>' + (d[k] || '–') + '</b>'; }).join(' · ') + ' → ใช้มิติสูงสุด</div>';
-    }
-    return '<div class="ai-panel" id="scorePanel"><h4>🎯 คะแนนที่ AI แนะนำ <span class="small muted">— ' + esc(form.risk.Assess_Mode) + ' · ความมั่นใจ ' + esc(CONF_LABEL[sc.confidence] || sc.confidence) + '</span></h4>' +
-      '<div class="score-line">Inherent ' + lvBadge(sc.inherent.level, sc.inherent.score) + ' &nbsp; Residual ' + lvBadge(sc.residual.level, sc.residual.score) + '</div>' +
+    var fields = [title + '_Impact', title + '_Likelihood'];
+    var dimLine = '<div class="dimrow">' + Object.keys(sc.byDimension || {}).map(function (k) { return esc(k) + ' <b>' + (sc.byDimension[k] || '–') + '</b>'; }).join(' · ') + ' → ใช้มิติสูงสุด</div>';
+    var ctlTable = (sc.controls || []).length ? '<div class="small" style="margin-top:8px"><b>การประเมิน control ที่ทำจริง</b></div><div class="table-wrap"><table><thead><tr><th>ประเภท</th><th>Control</th><th>ผล</th><th>ประสิทธิผล</th><th>หมายเหตุ</th></tr></thead><tbody>' +
+      sc.controls.map(function (c) {
+        var cls = { effective: 'good', partial: 'warn', ineffective: 'bad' }[c.effectiveness] || '';
+        return '<tr><td class="nowrap">' + esc(c.type) + '</td><td class="desc small">' + esc(c.control) + '</td><td class="nowrap small">' + esc(EFFECT_LABEL[c.effect] || c.effect) +
+          '</td><td><span class="badge ' + cls + '">' + esc(EFFECTIVE_LABEL[c.effectiveness] || c.effectiveness) + '</span></td><td class="desc small">' + esc(c.note) + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '';
+    return '<div class="ai-panel"><h4>🎯 คะแนน ' + title + ' ที่ AI แนะนำ <span class="small muted">— ' + esc(form.risk.Assess_Mode) + ' · ความมั่นใจ ' + esc(CONF_LABEL[sc.confidence] || sc.confidence) + '</span></h4>' +
+      '<div class="score-line">' + title + ' ' + lvBadge(sc.result.level, sc.result.score) + '</div>' +
+      (sc.assumedScenario ? '<div class="hint-box" style="margin-bottom:8px"><b>สถานการณ์ที่สมมติ (reasonable worst case):</b> ' + esc(sc.assumedScenario) + '</div>' : '') +
       (sc.notes.length ? '<div class="warn-box">' + sc.notes.map(esc).join('\n') + '</div>' : '') +
       '<div class="table-wrap"><table><thead><tr><th>มิติ</th><th>ที่เลือกไว้</th><th>AI แนะนำ</th><th>เหตุผล</th><th></th></tr></thead><tbody>' +
-      SCORE_FIELDS.map(function (f) {
+      fields.map(function (f) {
         var cur = form.risk[f], sug = sc.scores[f], dim = /Impact$/.test(f) ? 'Impact' : 'Likelihood';
-        var lab = function (v) { var s = INIT.scales.filter(function (x) { return x.dimension === dim && x.level === Number(v); })[0]; return v ? v + (s ? ' (' + s.label + ')' : '') : '–'; };
+        var lab = function (v) { var x = INIT.scales.filter(function (y) { return y.dimension === dim && y.level === Number(v); })[0]; return v ? v + (x ? ' (' + x.label + ')' : '') : '–'; };
         var diff = cur && String(cur) !== String(sug);
         return '<tr><td class="nowrap">' + esc(INIT.labels[f] || f) + '</td><td class="nowrap">' + esc(lab(cur)) + '</td><td class="nowrap"><b' + (diff ? ' style="color:var(--warn)"' : '') + '>' + esc(lab(sug)) + '</b></td>' +
-          '<td class="desc small">' + esc(sc.reasons[f + '_Rationale']) + (dim === 'Impact' ? dimLine(f.split('_')[0]) : '') + '</td><td>' + (form.canEdit ? '<button type="button" class="linkbtn" data-usescore="' + f + '">ใช้</button>' : '') + '</td></tr>';
-      }).join('') + '</tbody></table></div>' +
+          '<td class="desc small">' + esc(sc.reasons[f + '_Rationale']) + (dim === 'Impact' ? dimLine : '') + '</td><td>' + (form.canEdit ? '<button type="button" class="linkbtn" data-usescore="' + f + '" data-stage="' + stage + '">ใช้</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' + ctlTable +
+      (sc.guidance ? '<div class="small" style="margin-top:6px"><b>ข้อแนะนำ:</b> ' + esc(sc.guidance) + '</div>' : '') +
       (sc.missingInfo ? '<div class="small" style="margin-top:6px"><b>ข้อมูลที่ควรเพิ่มเพื่อให้คะแนนแม่นขึ้น:</b> ' + esc(sc.missingInfo) + '</div>' : '') +
-      '<div class="section-actions">' + (form.canEdit ? '<button type="button" class="btn" data-useallscore="1">ใช้คะแนนและเหตุผลทั้งหมด</button>' : '') +
-      '<button type="button" class="btn ghost" data-closescore="1">ปิด</button><span class="small muted">"ใช้" = ใส่ระดับและเหตุผลลงช่อง Rationale (แก้ต่อได้)</span></div>' + disclaimer() + '</div>';
+      '<div class="section-actions">' + (form.canEdit ? '<button type="button" class="btn" data-useallscore="' + stage + '">ใช้คะแนนและเหตุผล ' + title + '</button>' : '') +
+      '<button type="button" class="btn ghost" data-closescore="' + stage + '">ปิด</button><span class="small muted">"ใช้" = ใส่ระดับและเหตุผลลงช่อง Rationale (แก้ต่อได้)</span></div>' + disclaimer() + '</div>';
   }
 
   // ---- AI แนะนำ Risk Type / Sub-type จาก Risk Scenario ----
@@ -627,21 +688,19 @@
     html += '<fieldset><legend>ข้อมูลประกอบการให้คะแนน</legend>' +
       '<div class="small muted" style="margin-bottom:8px">' + (reassess
         ? 'Reassessment: ต้องกรอกช่วงเวลา เหตุการณ์จริง/near miss มิติที่กระทบจริง และ control ที่ทำจริง (P/D/C) ก่อนให้คะแนน Residual'
-        : 'New Risk: ต้องมีเหตุการณ์ ผลกระทบ ความถี่ที่เคยเกิด/คาดว่าจะเกิด และ control ที่มี ก่อนให้คะแนน') + '</div>' +
-      '<div class="row3">' + fieldHtml('Assess_Mode', 'select', opt(INIT.lists.assessModes, r.Assess_Mode)) +
-      fieldHtml('Review_Window', 'select', '<option value="">–</option>' + opt(INIT.lists.reviewWindows, r.Review_Window)) +
-      fieldHtml('Incident_Count', 'number') + '</div>' +
-      fieldHtml('Incident_Examples', 'textarea') +
-      '<div class="f"><label>' + esc(INIT.labels.Impact_Dimensions) + ' (ใช้มิติที่กระทบสูงสุดเป็น Impact)</label><div class="checks">' +
+        : 'New Risk: Inherent ต้องมีเหตุการณ์ ผลกระทบ และความถี่ที่เคยเกิด/คาดว่าจะเกิด; Residual ต้องมี control ที่ทำจริง (P/D/C) เพิ่ม') + '</div>' +
+      '<div class="row3">' +
+      (form.isNew
+        ? '<div class="f"><label>' + esc(INIT.labels.Assess_Mode) + '</label><input type="hidden" data-f="Assess_Mode" value="New Risk"><div><span class="badge info">New Risk — ความเสี่ยงใหม่</span></div></div>'
+        : fieldHtml('Assess_Mode', 'select', opt(INIT.lists.assessModes, r.Assess_Mode))) +
+      (reassess ? fieldHtml('Review_Window', 'select', '<option value="">–</option>' + opt(INIT.lists.reviewWindows, r.Review_Window)) : '') +
+      '<div class="f"><label>' + (reassess ? esc(INIT.labels.Incident_Count) : 'เคยเกิดขึ้นกี่ครั้งต่อปี (ถ้าทราบ)') + '</label><input type="number" min="0" data-f="Incident_Count" value="' + esc(r.Incident_Count) + '"' + dis + '></div></div>' +
+      '<div class="f"><label>' + (reassess ? esc(INIT.labels.Incident_Examples) : 'ข้อมูลการเกิด / ตัวอย่างเหตุการณ์ที่เคยเกิด หรือเหตุผลที่คาดว่าจะเกิด') + '</label><textarea data-f="Incident_Examples"' + dis + '>' + esc(r.Incident_Examples) + '</textarea></div>' +
+      '<div class="f"><label><span>' + esc(INIT.labels.Impact_Dimensions) + ' (ใช้มิติที่กระทบสูงสุดเป็น Impact)</span><span>' + scaleLinks(['impact', 'likelihood']) + '</span></label><div class="checks">' +
       INIT.lists.impactDimensions.map(function (d) {
         return '<label><input type="checkbox" data-dim="' + esc(d) + '"' + (dimsSel.indexOf(d) >= 0 ? ' checked' : '') + dis + '> ' + esc(d) + '</label>';
       }).join('') + '</div></div></fieldset>';
-    if (INIT.cfg.aiEnabled && (form.canEdit || form.scoreSuggestion)) {
-      html += '<div class="section-actions" id="scoreBar">' + (form.canEdit ? '<button type="button" class="btn ghost" id="btnAiScore">🎯 AI แนะนำคะแนน</button>' : '') +
-        '<span class="small muted">AI เทียบกับเกณฑ์ 5 มิติและ Likelihood ของบริษัท — ถ้าข้อมูลยังไม่พอ จะถามกลับแทนการเดาคะแนน</span></div>';
-    }
-    html += scoreSuggestionHtml(form.scoreSuggestion);
-    html += '<fieldset><legend>2. Inherent risk (ก่อนมีมาตรการควบคุม)</legend><div class="row2">' +
+    html += '<fieldset><legend>2. Inherent risk (ก่อนมีมาตรการควบคุม)</legend>' + scoreBar('inherent') + '<div class="row2">' +
       '<div>' + fieldHtml('Inherent_Impact', 'select', levelOptions('Impact', r.Inherent_Impact)) + '<div class="hint-box" id="hint-Inherent_Impact">' + esc(scaleText('Impact', r.Inherent_Impact) || 'ระดับความรุนแรงของผลกระทบ หากเกิดขึ้นโดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
       '<div>' + fieldHtml('Inherent_Likelihood', 'select', levelOptions('Likelihood', r.Inherent_Likelihood)) + '<div class="hint-box" id="hint-Inherent_Likelihood">' + esc(scaleText('Likelihood', r.Inherent_Likelihood) || 'โอกาส/ความถี่ที่จะเกิด โดยยังไม่มีมาตรการควบคุม') + '</div></div>' +
       '</div>' + scoreLine('Inherent') + '<div class="row2">' + fieldHtml('Inherent_Impact_Rationale', 'textarea') + fieldHtml('Inherent_Likelihood_Rationale', 'textarea') + '</div></fieldset>';
@@ -653,7 +712,7 @@
       CTL.map(function (k) {
         return '<div class="f"><label>' + k + '</label><textarea data-ctl="' + k + '" placeholder="' + esc(CTL_HINT[k]) + '"' + dis + '>' + esc(ctl[k]) + '</textarea></div>';
       }).join('') + '<div id="ctlSugg"></div></fieldset>';
-    html += '<fieldset><legend>4. Residual risk (หลังมีมาตรการควบคุมที่ทำอยู่แล้ว)</legend><div class="row2">' +
+    html += '<fieldset><legend>4. Residual risk (หลังมีมาตรการควบคุมที่ทำอยู่แล้ว)</legend>' + scoreBar('residual') + '<div class="row2">' +
       '<div>' + fieldHtml('Residual_Impact', 'select', levelOptions('Impact', r.Residual_Impact)) + '<div class="hint-box" id="hint-Residual_Impact">' + esc(scaleText('Impact', r.Residual_Impact) || 'ความรุนแรงหลังมีมาตรการควบคุมที่ทำอยู่แล้ว') + '</div></div>' +
       '<div>' + fieldHtml('Residual_Likelihood', 'select', levelOptions('Likelihood', r.Residual_Likelihood)) + '<div class="hint-box" id="hint-Residual_Likelihood">' + esc(scaleText('Likelihood', r.Residual_Likelihood) || 'โอกาสเกิดหลังมีมาตรการควบคุมที่ทำอยู่แล้ว') + '</div></div>' +
       '</div>' + scoreLine('Residual') + '<div class="row2">' + fieldHtml('Residual_Impact_Rationale', 'textarea') + fieldHtml('Residual_Likelihood_Rationale', 'textarea') + '</div></fieldset>';
@@ -712,7 +771,7 @@
         if (form.canEdit && INIT.cfg.aiEnabled && !form.risk.Risk_Type && txt.length >= 20 && txt !== form.classifiedText) runClassify(false);
       } else if (f === 'Assess_Mode') {
         collectForm();
-        form.scoreSuggestion = null;
+        form.scoreSug = null;
         rerenderKeepScroll();
       } else if (f === 'Risk_Subtype') {
         var tax = INIT.taxonomy.filter(function (x) { return x.type === form.risk.Risk_Type && x.subtype === t.value; })[0];
@@ -765,17 +824,19 @@
       if (t.dataset.closesugg) { collectForm(); form.suggestion = null; rerenderKeepScroll(); return; }
       if (t.dataset.usescore || t.dataset.useallscore) {
         collectForm();
-        var sc = form.scoreSuggestion;
-        (t.dataset.useallscore ? SCORE_FIELDS : [t.dataset.usescore]).forEach(function (f) {
+        var stg = t.dataset.useallscore || t.dataset.stage;
+        var sc = form.scoreSug[stg];
+        (t.dataset.useallscore ? Object.keys(sc.scores) : [t.dataset.usescore]).forEach(function (f) {
           form.risk[f] = sc.scores[f];
           if (sc.reasons[f + '_Rationale']) form.risk[f + '_Rationale'] = sc.reasons[f + '_Rationale'];
         });
-        if (t.dataset.useallscore) form.scoreSuggestion = null;
+        if (t.dataset.useallscore) form.scoreSug[stg] = null;
         form.dirty = true;
         rerenderKeepScroll();
-        if (t.dataset.useallscore) toast('ใส่คะแนนจาก AI แล้ว — ตรวจทานเหตุผลก่อนบันทึก');
+        if (t.dataset.useallscore) toast('ใส่คะแนน ' + STAGE_LABEL[stg] + ' จาก AI แล้ว — ตรวจทานเหตุผลก่อนบันทึก');
         return;
       }
+      if (t.dataset.aiscore) return aiScore(t.dataset.aiscore, t);
       if (t.dataset.usetype !== undefined) {
         collectForm();
         var pick = form.classify.candidates[Number(t.dataset.usetype)];
@@ -787,7 +848,7 @@
         return;
       }
       if (t.dataset.closetype) { form.classify = null; renderClassifyBox(); return; }
-      if (t.dataset.closescore) { collectForm(); form.scoreSuggestion = null; rerenderKeepScroll(); return; }
+      if (t.dataset.closescore) { if (form.scoreSug) form.scoreSug[t.dataset.closescore] = null; $('scorePanel-' + t.dataset.closescore).innerHTML = ''; return; }
       if (t.dataset.gofield) {
         var target = body.querySelector('[data-f="' + t.dataset.gofield + '"]') || body.querySelector('[data-ctl="Preventive"]') || body.querySelector('[data-dim]');
         if (target) { target.scrollIntoView({ block: 'center' }); target.focus(); }
@@ -806,7 +867,6 @@
     if ($('btnClose')) $('btnClose').onclick = toggleClose;
     if ($('btnAiDraft')) $('btnAiDraft').onclick = function () { $('draftBox').classList.toggle('hidden'); if (!$('draftBox').classList.contains('hidden')) $('draftBrief').focus(); $('drawerBody').scrollTop = 0; };
     if ($('btnDraftGo')) $('btnDraftGo').onclick = aiDraft;
-    if ($('btnAiScore')) $('btnAiScore').onclick = aiScore;
     if ($('btnAiType')) $('btnAiType').onclick = function () { runClassify(true); };
   }
 
@@ -829,16 +889,16 @@
     }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
   }
 
-  function aiScore() {
+  function aiScore(stage, btn) {
     collectForm();
-    var btn = $('btnAiScore');
-    if (!String(form.risk.Risk_Scenario || '').trim()) return toast('กรอก Risk Scenario (และควรมี Cause / Consequences / Existing control) ก่อน');
-    busy(btn, true, 'AI กำลังประเมินคะแนน…');
-    call('apiAiSuggest', [{ mode: 'score', dept: form.dept, draft: form.risk, kris: form.kris }]).then(function (s) {
+    if (!String(form.risk.Risk_Scenario || '').trim()) return toast('กรอก Risk Scenario ก่อน');
+    busy(btn, true, 'AI กำลังประเมิน ' + STAGE_LABEL[stage] + '…');
+    call('apiAiSuggest', [{ mode: 'score', stage: stage, dept: form.dept, draft: form.risk, kris: form.kris }]).then(function (s) {
       busy(btn, false);
-      form.scoreSuggestion = s;
+      form.scoreSug = form.scoreSug || {};
+      form.scoreSug[stage] = s;
       rerenderKeepScroll();
-      $('scorePanel').scrollIntoView({ block: 'start' });
+      var el = $('scorePanel-' + stage); if (el) el.scrollIntoView({ block: 'start' });
     }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
   }
 
@@ -1267,9 +1327,22 @@
     if (form && form.dirty && form.canEdit && !confirm('มีการแก้ไขที่ยังไม่บันทึก — ปิดหรือไม่?')) return;
     closeDrawer();
   }
+  document.addEventListener('click', function (ev) {
+    var t = ev.target.closest('[data-scale],[data-scaletab]');
+    if (!t) return;
+    ev.stopPropagation();
+    openScale(t.getAttribute('data-scale') || t.getAttribute('data-scaletab'));
+  }, true);
+  $('modalClose').addEventListener('click', closeScale);
+  $('modal').addEventListener('click', function (ev) { if (ev.target === $('modal')) closeScale(); });
+  $('btnScale').addEventListener('click', function () { openScale('impact'); });
   $('drawerClose').addEventListener('click', tryClose);
   $('scrim').addEventListener('click', tryClose);
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('drawer').classList.contains('hidden')) tryClose(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (!$('modal').classList.contains('hidden')) return closeScale();
+    if (!$('drawer').classList.contains('hidden')) tryClose();
+  });
   window.addEventListener('beforeunload', function (e) { if (form && form.dirty) { e.preventDefault(); e.returnValue = ''; } });
 
   start();

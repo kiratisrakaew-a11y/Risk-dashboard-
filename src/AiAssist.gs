@@ -7,7 +7,7 @@
  * prompt / schema / validate เป็น pure function (มี unit test)
  */
 
-var AI_PROMPT_VERSION = 'r2'; // r2: เกณฑ์บริษัท 5 มิติ, P/D/C, ไม่เดาคะแนนเมื่อข้อมูลไม่พอ
+var AI_PROMPT_VERSION = 'r3'; // r3: แยกแนะนำคะแนน Inherent / Residual
 
 var AI_DEFAULT_CRITERIA = {
   RISK: [
@@ -97,20 +97,36 @@ function aiDraftSchema_() {
 /** คีย์มิติผลกระทบใน schema → ชื่อมิติ */
 var AI_DIM_KEYS = { financial: 'Financial', legal: 'Legal & Compliance', reputation: 'Reputation', operations: 'Operations', esg: 'ESG' };
 
-function aiScoreSchema_() {
+/** schema แนะนำคะแนนแยกขั้น: inherent / residual (residual มีผลประเมิน control รายตัว) */
+function aiScoreSchema_(stage) {
   var dims = { type: 'object', additionalProperties: false, required: Object.keys(AI_DIM_KEYS), properties: {} };
   Object.keys(AI_DIM_KEYS).forEach(function (k) { dims.properties[k] = { type: 'integer' }; });
   var props = {
     status: { type: 'string', enum: ['need_info', 'scored'] },
     questions: { type: 'array', items: { type: 'string' } },
     guidance: { type: 'string' },
-    inherent_impact_by_dimension: dims, inherent_impact_reason: { type: 'string' },
-    inherent_likelihood: { type: 'integer' }, inherent_likelihood_reason: { type: 'string' },
-    residual_impact_by_dimension: JSON.parse(JSON.stringify(dims)), residual_impact_reason: { type: 'string' },
-    residual_likelihood: { type: 'integer' }, residual_likelihood_reason: { type: 'string' },
+    impact_by_dimension: dims, impact_reason: { type: 'string' },
+    likelihood: { type: 'integer' }, likelihood_reason: { type: 'string' },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     missing_info: { type: 'string' }
   };
+  if (stage === 'residual') {
+    props.control_assessment = {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false, required: ['control_type', 'control', 'effect', 'effectiveness', 'note'],
+        properties: {
+          control_type: { type: 'string', enum: CONTROL_TYPES },
+          control: { type: 'string' },
+          effect: { type: 'string', enum: ['reduce_likelihood', 'reduce_impact', 'both', 'none'] },
+          effectiveness: { type: 'string', enum: ['effective', 'partial', 'ineffective'] },
+          note: { type: 'string' }
+        }
+      }
+    };
+  } else {
+    props.assumed_scenario = { type: 'string' };
+  }
   return { type: 'object', additionalProperties: false, required: Object.keys(props), properties: props };
 }
 
@@ -254,21 +270,33 @@ function buildSuggestPrompt_(req, ctx) {
   var draft = normalizeRisk_(req.draft || {});
   var mode = draft.Assess_Mode;
   if (req.mode === 'score') {
-    if (!str_(draft.Risk_Scenario) && !str_(req.brief)) throw new Error('กรอก Risk Scenario ก่อน แล้ว AI จะแนะนำคะแนนให้');
+    var stage = req.stage === 'residual' ? 'residual' : 'inherent';
+    if (!str_(draft.Risk_Scenario)) throw new Error('กรอก Risk Scenario ก่อน แล้ว AI จะแนะนำคะแนนให้');
+    var common = '- ถ้าข้อมูลยังไม่พอ ให้ status = need_info ใส่คำถามใน questions และกรอบคิดใน guidance ฟิลด์คะแนนใส่ 0\n' +
+      '- Impact: ให้คะแนนทีละมิติ 1–5 ตามเกณฑ์บริษัท (0 = มิตินั้นไม่ได้รับผลกระทบ) ระบบจะใช้มิติที่สูงสุดเป็น Impact เอง\n' +
+      '- เหตุผลเขียนให้ใส่ช่อง Rationale ได้ทันที อ้างอิง 1–2 มิติหลักและเกณฑ์บริษัท\n' +
+      '- confidence = ความมั่นใจตามความครบถ้วนของข้อมูล; missing_info = ข้อมูลที่ควรเพิ่มเพื่อให้คะแนนแม่นขึ้น\n' +
+      '- หลีกเลี่ยงการประเมินต่ำหรือสูงเกินจริง';
+    var system = stage === 'inherent'
+      ? AI_SYSTEM_BASE + '\n\nงาน: แนะนำคะแนน **Inherent risk** (ความเสี่ยงก่อนมีมาตรการควบคุม)\n' +
+        'หลักการประเมิน Inherent:\n' +
+        '- สมมติว่า**ไม่มีมาตรการควบคุมใดๆ** หรือ control ทั้งหมดล้มเหลว — ห้ามนำ Exiting control ที่ระบุมาลดคะแนน\n' +
+        '- ใช้กรณีเลวร้ายที่สมเหตุสมผล (reasonable worst case) ไม่ใช่เหตุการณ์สุดโต่งที่แทบเป็นไปไม่ได้ และระบุสถานการณ์ที่สมมติไว้ใน assumed_scenario\n' +
+        '- Impact: ความเสียหายสูงสุดที่สมเหตุสมผลในแต่ละมิติ หากเหตุการณ์เกิดขึ้นโดยไม่มีอะไรมาจำกัดความเสียหาย\n' +
+        '- Likelihood: โอกาส/ความถี่ที่เหตุการณ์จะเกิดหากไม่มี control อ้างอิงประวัติการเกิด ลักษณะงาน และปัจจัยเสี่ยง ตามเกณฑ์ความถี่/% ของบริษัท\n' + common
+      : AI_SYSTEM_BASE + '\n\nงาน: แนะนำคะแนน **Residual risk** (ความเสี่ยงคงเหลือหลังมีมาตรการควบคุมที่ทำอยู่จริง) โหมด ' + draft.Assess_Mode + '\n' +
+        'หลักการประเมิน Residual:\n' +
+        '- เริ่มจากคะแนน Inherent ที่ระบุ (Impact ' + draft.Inherent_Impact + ' × Likelihood ' + draft.Inherent_Likelihood + ') แล้วประเมินผลของ control ที่ทำจริงทีละตัวใน control_assessment\n' +
+        '- Preventive มักลด Likelihood (ป้องกันไม่ให้เกิด); Detective และ Corrective มักลด Impact (พบเร็ว จำกัดความเสียหาย กู้คืนเร็ว) — ระบุ effect ของแต่ละ control\n' +
+        '- effectiveness: effective เฉพาะ control ที่ระบุผู้รับผิดชอบ ความถี่ และหลักฐานชัดเจน; ไม่มีหลักฐานหรือเคยล้มเหลว = partial หรือ ineffective และห้ามนำมาลดคะแนนเต็มที่\n' +
+        (draft.Assess_Mode === 'Reassessment'
+          ? '- Reassessment: Likelihood ต้องสอดคล้องกับจำนวนเหตุการณ์จริง/near miss ในช่วงที่ทบทวน (เทียบเป็นความถี่ต่อปีตามเกณฑ์บริษัท) และ Impact สอดคล้องกับความเสียหายจริงที่เกิด\n' : '') +
+        '- Residual Impact และ Likelihood ต้องไม่สูงกว่า Inherent; ถ้า control ไม่มีผลจริง ให้คงเท่า Inherent\n' +
+        '- ถ้า Residual สูงกว่า Medium ให้ระบุใน guidance ว่าต้องมี Mitigation plan ลด Impact หรือ Likelihood เพื่อให้อยู่ระดับ Medium หรือต่ำกว่า\n' + common;
     return {
-      system: AI_SYSTEM_BASE + '\n\nงาน: แนะนำคะแนนความเสี่ยงโหมด ' + mode + '\n' +
-        '- ถ้าข้อมูลยังไม่พอ (' + (mode === 'Reassessment'
-          ? 'ต้องมี: ความเสี่ยงเดิม, ช่วงเวลาที่ทบทวน, เหตุการณ์จริง/near miss + ตัวอย่าง, ผลกระทบจริงอย่างน้อย 1–2 มิติ, Exiting control ที่ทำจริง + ความถี่ + หลักฐาน'
-          : 'ต้องมี: เหตุการณ์, ผลกระทบ, ความถี่/ข้อมูลการเกิด, controls ที่มี') +
-        ') ให้ status = need_info, ใส่คำถามที่ต้องถามใน questions และกรอบคิดใน guidance; ฟิลด์คะแนนทั้งหมดใส่ 0\n' +
-        '- ถ้าข้อมูลเพียงพอ ให้ status = scored และให้คะแนน Impact รายมิติ 1–5 (0 = มิตินั้นไม่ได้รับผลกระทบ) ทั้ง Inherent (ก่อนมี control) และ Residual (หลัง control ที่ทำจริง) ระบบจะใช้มิติที่สูงสุดเป็น Impact เอง\n' +
-        '- Likelihood 1–5 ตามเกณฑ์ความถี่/ความน่าจะเป็นของบริษัท' + (mode === 'Reassessment' ? ' โดย Residual Likelihood ต้องอิงจำนวนเหตุการณ์จริงในช่วงที่ทบทวน' : '') + '\n' +
-        '- เหตุผลแต่ละช่องเขียนให้ใส่ช่อง Rationale ได้ทันที อ้างอิง 1–2 มิติหลักและเกณฑ์บริษัท\n' +
-        '- Residual ต้องไม่สูงกว่า Inherent และลดลงได้เฉพาะเมื่อ control ที่ทำจริงลดผลกระทบหรือโอกาสเกิดได้\n' +
-        '- ถ้าผู้ใช้เลือกคะแนนไว้แล้ว ให้ประเมินอย่างอิสระ และระบุในเหตุผลว่าเห็นต่างเพราะอะไร\n' +
-        '- confidence = ความมั่นใจตามความครบถ้วนของข้อมูล; missing_info = ข้อมูลที่ควรเพิ่มเพื่อให้คะแนนแม่นขึ้น',
+      system: system,
       user: deptText_(ctx) + '\n\n' + scaleText_(ctx.scales) + '\n\n<data>\n' + riskDataText_(draft, req.kris) + '\n</data>',
-      schema: aiScoreSchema_(), schemaName: 'risk_score'
+      schema: aiScoreSchema_(stage), schemaName: 'risk_score_' + stage
     };
   }
   if (req.mode === 'classify') {
@@ -465,60 +493,73 @@ function validateClassify_(obj, taxonomy) {
   return { candidates: out, notes: out.length ? [] : ['AI ไม่พบประเภทที่ตรงกับ Taxonomy — กรุณาเลือกเอง หรือเพิ่มรายละเอียดใน Risk Scenario / Risk cause'] };
 }
 
-/** ผล AI แนะนำคะแนน → need_info (คำถาม) หรือคะแนนที่ระบบคิดเอง: Impact = มิติสูงสุด, Residual ≤ Inherent */
-function validateScoreSuggestion_(obj) {
+/**
+ * ผล AI แนะนำคะแนน 1 ขั้น → need_info (คำถาม) หรือคะแนนที่ระบบคิดเอง: Impact = มิติสูงสุด
+ * cap = { impact, likelihood } (สำหรับ residual = คะแนน Inherent) — ห้ามเกิน
+ */
+function validateScoreSuggestion_(obj, stage, cap) {
   if (!obj || typeof obj !== 'object') throw new Error('AI ไม่ได้ตอบเป็น JSON object');
+  stage = stage === 'residual' ? 'residual' : 'inherent';
+  var prefix = stage === 'residual' ? 'Residual' : 'Inherent';
   var questions = (Array.isArray(obj.questions) ? obj.questions : []).map(str_).filter(String);
-  function dims(o) {
-    var out = {}, max = 0;
-    Object.keys(AI_DIM_KEYS).forEach(function (k) {
-      var v = Math.round(num_(o && o[k]) || 0);
-      v = v >= 1 && v <= 5 ? v : 0;
-      out[AI_DIM_KEYS[k]] = v;
-      if (v > max) max = v;
-    });
-    return { byDim: out, max: max };
-  }
-  var inh = dims(obj.inherent_impact_by_dimension), res = dims(obj.residual_impact_by_dimension);
-  var il = level_(obj.inherent_likelihood), rl = level_(obj.residual_likelihood);
-  if (obj.status === 'need_info' || !inh.max || !il || !res.max || !rl) {
-    return { status: 'need_info', questions: questions.length ? questions : ['ข้อมูลยังไม่พอให้คะแนน — เพิ่มรายละเอียดผลกระทบ ความถี่ และ control ที่ทำจริง'],
+  var byDim = {}, imp = 0;
+  Object.keys(AI_DIM_KEYS).forEach(function (k) {
+    var v = Math.round(num_(obj.impact_by_dimension && obj.impact_by_dimension[k]) || 0);
+    v = v >= 1 && v <= 5 ? v : 0;
+    byDim[AI_DIM_KEYS[k]] = v;
+    if (v > imp) imp = v;
+  });
+  var lk = level_(obj.likelihood);
+  if (obj.status === 'need_info' || !imp || !lk) {
+    return { stage: stage, status: 'need_info', questions: questions.length ? questions : ['ข้อมูลยังไม่พอให้คะแนน ' + prefix + ' — เพิ่มรายละเอียดผลกระทบ ความถี่' + (stage === 'residual' ? ' และ control ที่ทำจริง' : '')],
       guidance: str_(obj.guidance), missingInfo: str_(obj.missing_info), notes: [] };
   }
   var notes = [];
-  var scores = { Inherent_Impact: inh.max, Inherent_Likelihood: il, Residual_Impact: res.max, Residual_Likelihood: rl };
-  ['Impact', 'Likelihood'].forEach(function (d) {
-    if (scores['Residual_' + d] > scores['Inherent_' + d]) {
-      notes.push('AI ให้ Residual ' + d + ' สูงกว่า Inherent — ปรับเป็น ' + scores['Inherent_' + d] + ' ให้เท่ากัน');
-      scores['Residual_' + d] = scores['Inherent_' + d];
-    }
-  });
-  var is = scores.Inherent_Impact * scores.Inherent_Likelihood, rs = scores.Residual_Impact * scores.Residual_Likelihood;
-  var rlv = riskLevel_(rs);
-  if (levelRank_(rlv.key) > levelRank_('Medium')) notes.push('Residual อยู่ระดับ ' + rlv.key + ' (สูงกว่า Medium) — ต้องมี Mitigation plan เพื่อลดให้อยู่ระดับ Medium หรือต่ำกว่า');
-  return {
-    status: 'scored', scores: scores,
-    byDimension: { Inherent: inh.byDim, Residual: res.byDim },
-    reasons: {
-      Inherent_Impact_Rationale: str_(obj.inherent_impact_reason), Inherent_Likelihood_Rationale: str_(obj.inherent_likelihood_reason),
-      Residual_Impact_Rationale: str_(obj.residual_impact_reason), Residual_Likelihood_Rationale: str_(obj.residual_likelihood_reason)
-    },
-    inherent: { score: is, level: riskLevel_(is).key }, residual: { score: rs, level: rlv.key },
+  if (stage === 'residual' && cap) {
+    if (level_(cap.impact) && imp > level_(cap.impact)) { notes.push('AI ให้ Residual Impact สูงกว่า Inherent — ปรับเป็น ' + level_(cap.impact)); imp = level_(cap.impact); }
+    if (level_(cap.likelihood) && lk > level_(cap.likelihood)) { notes.push('AI ให้ Residual Likelihood สูงกว่า Inherent — ปรับเป็น ' + level_(cap.likelihood)); lk = level_(cap.likelihood); }
+  }
+  var score = imp * lk, lv = riskLevel_(score);
+  if (stage === 'residual' && levelRank_(lv.key) > levelRank_('Medium')) {
+    notes.push('Residual อยู่ระดับ ' + lv.key + ' (สูงกว่า Medium) — ต้องมี Mitigation plan ลด Impact หรือ Likelihood ให้อยู่ระดับ Medium หรือต่ำกว่า');
+  }
+  var scores = {}, reasons = {};
+  scores[prefix + '_Impact'] = imp;
+  scores[prefix + '_Likelihood'] = lk;
+  reasons[prefix + '_Impact_Rationale'] = str_(obj.impact_reason);
+  reasons[prefix + '_Likelihood_Rationale'] = str_(obj.likelihood_reason);
+  var out = {
+    stage: stage, status: 'scored', scores: scores, reasons: reasons, byDimension: byDim,
+    result: { score: score, level: lv.key },
     confidence: ['low', 'medium', 'high'].indexOf(obj.confidence) >= 0 ? obj.confidence : 'low',
     missingInfo: str_(obj.missing_info), guidance: str_(obj.guidance), notes: notes, questions: []
   };
+  if (stage === 'inherent') out.assumedScenario = str_(obj.assumed_scenario);
+  else {
+    out.controls = (Array.isArray(obj.control_assessment) ? obj.control_assessment : []).map(function (c) {
+      return {
+        type: CONTROL_TYPES.indexOf(c && c.control_type) >= 0 ? c.control_type : '',
+        control: str_(c && c.control),
+        effect: ['reduce_likelihood', 'reduce_impact', 'both', 'none'].indexOf(c && c.effect) >= 0 ? c.effect : 'none',
+        effectiveness: ['effective', 'partial', 'ineffective'].indexOf(c && c.effectiveness) >= 0 ? c.effectiveness : 'partial',
+        note: str_(c && c.note)
+      };
+    }).filter(function (c) { return c.control; });
+  }
+  return out;
 }
 
 /** คำถาม/กรอบคิดเมื่อข้อมูลขั้นต่ำยังไม่ครบ (ไม่เรียก AI) */
-function intakeResponse_(miss, mode) {
+function intakeResponse_(miss, mode, stage) {
+  var guidance = stage === 'residual'
+    ? 'Residual: เริ่มจากคะแนน Inherent แล้วพิจารณาว่า control ที่ทำจริงลดอะไรได้ — Preventive มักลด Likelihood, Detective/Corrective มักลด Impact; ลดได้เฉพาะ control ที่มีผู้รับผิดชอบ ความถี่ และหลักฐาน' +
+      (mode === 'Reassessment' ? ' — Reassessment ต้องอิงจำนวนเหตุการณ์จริงในช่วงที่ทบทวน และความเสียหายจริงที่เกิด' : '')
+    : 'Inherent: ประเมินโดยสมมติว่ายังไม่มี control — Impact ใช้ความเสียหายสูงสุดที่สมเหตุสมผลในมิติที่กระทบสูงสุด, Likelihood ใช้ความถี่/โอกาสเกิดหากไม่มีการควบคุมตามเกณฑ์บริษัท';
   return {
-    status: 'need_info', local: true,
+    stage: stage, status: 'need_info', local: true,
     questions: miss.map(function (m) { return m.question; }),
     fields: miss.map(function (m) { return m.field; }),
-    guidance: mode === 'Reassessment'
-      ? 'Reassessment: ต้องมีข้อมูลเหตุการณ์จริงในช่วงที่ทบทวน และ control ที่ทำจริง (P/D/C) ก่อนให้คะแนน Residual — Likelihood อิงจำนวนครั้งที่เกิดจริง, Impact อิงมิติที่กระทบจริงและใช้มิติที่สูงสุด'
-      : 'New Risk: ระบุเหตุการณ์ ผลกระทบ (มิติไหน ขนาดเท่าไร) ความถี่ที่คาดว่าจะเกิด และ control ที่มี — Impact ใช้มิติที่กระทบสูงสุด, Likelihood ใช้เกณฑ์ความถี่/ความน่าจะเป็นของบริษัท',
-    missingInfo: '', notes: []
+    guidance: guidance, missingInfo: '', notes: []
   };
 }
 
@@ -578,11 +619,12 @@ function checkAiQuota_(u) {
 function aiSuggest_(u, req) {
   var dept = String(req.dept || '').toUpperCase();
   requireEdit_(u, dept);
+  var d = normalizeRisk_(req.draft || {});
+  var stage = req.stage === 'residual' ? 'residual' : 'inherent';
   if (req.mode === 'score') {
     // ข้อมูลขั้นต่ำยังไม่ครบ → ถามกลับโดยไม่เรียก AI (กันการเดาคะแนน)
-    var d = normalizeRisk_(req.draft || {});
-    var miss = missingIntake_(d);
-    if (miss.length) { var r0 = intakeResponse_(miss, d.Assess_Mode); r0.mode = 'score'; return r0; }
+    var miss = missingIntake_(d, stage);
+    if (miss.length) { var r0 = intakeResponse_(miss, d.Assess_Mode, stage); r0.mode = 'score'; return r0; }
   }
   checkAiQuota_(u);
   var ctx = aiContext_(dept);
@@ -597,7 +639,7 @@ function aiSuggest_(u, req) {
     return { mode: 'improve', field: req.field, text: str_(res.data.text), reason: str_(res.data.reason), model: res.model };
   }
   if (req.mode === 'score') {
-    var sc = validateScoreSuggestion_(res.data);
+    var sc = validateScoreSuggestion_(res.data, stage, { impact: d.Inherent_Impact, likelihood: d.Inherent_Likelihood });
     sc.mode = 'score';
     sc.model = res.model;
     return sc;

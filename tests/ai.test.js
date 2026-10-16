@@ -124,64 +124,82 @@ test('buildKriCommentPrompt_', () => {
   assert.equal(p.schemaName, 'kri_comment_review');
 });
 
-test('AI แนะนำคะแนน: prompt ใช้เกณฑ์บริษัท 5 มิติ + หน่วยงาน และต้องมี Scenario', () => {
+test('AI แนะนำคะแนน Inherent / Residual: prompt ใช้หลักการต่างกัน', () => {
   const ctx = Object.assign({}, CTX, { deptDesc: 'ดูแลจอ LED ริมถนน' });
-  const p = G.buildSuggestPrompt_({ mode: 'score', draft: { Risk_Scenario: 'จอดับ', Existing_Control: 'Detective: แจ้งเตือนอัตโนมัติ', Assess_Mode: 'Reassessment' } }, ctx);
-  assert.equal(p.schemaName, 'risk_score');
-  assert.match(p.user, /เกณฑ์ Impact ของบริษัท \(ใช้คะแนนสูงสุดของมิติที่กระทบจริง\)/);
-  assert.match(p.user, /Financial: สูญเสียหรือค่าใช้จ่ายต่ำกว่า 1% ของกำไร/);
-  assert.match(p.user, /โอกาสเกิดในปีนี้ > 80%/);
-  assert.match(p.user, /หน้าที่ของหน่วยงาน: ดูแลจอ LED ริมถนน/);
-  assert.match(p.system, /Plan B Media/);
-  assert.match(p.system, /status = need_info/);
-  assert.match(p.system, /เหตุการณ์จริง\/near miss/);           // กติกา Reassessment
-  assert.deepEqual(Object.keys(p.schema.properties).sort(), plain(p.schema.required).sort());
+  const draft = { Risk_Scenario: 'จอดับ', Existing_Control: 'Detective: แจ้งเตือนอัตโนมัติ', Assess_Mode: 'Reassessment', Inherent_Impact: 4, Inherent_Likelihood: 5 };
+  const pi = G.buildSuggestPrompt_({ mode: 'score', stage: 'inherent', draft }, ctx);
+  assert.equal(pi.schemaName, 'risk_score_inherent');
+  assert.match(pi.system, /ไม่มีมาตรการควบคุมใดๆ/);
+  assert.match(pi.system, /reasonable worst case/);
+  assert.match(pi.system, /ห้ามนำ Exiting control ที่ระบุมาลดคะแนน/);
+  assert.ok(pi.schema.properties.assumed_scenario);
+  assert.equal(pi.schema.properties.control_assessment, undefined);
+  assert.match(pi.user, /Financial: สูญเสียหรือค่าใช้จ่ายต่ำกว่า 1% ของกำไร/);
+  assert.match(pi.user, /หน้าที่ของหน่วยงาน: ดูแลจอ LED ริมถนน/);
+  const pr = G.buildSuggestPrompt_({ mode: 'score', stage: 'residual', draft }, ctx);
+  assert.equal(pr.schemaName, 'risk_score_residual');
+  assert.match(pr.system, /Impact 4 × Likelihood 5/);
+  assert.match(pr.system, /Preventive มักลด Likelihood/);
+  assert.match(pr.system, /จำนวนเหตุการณ์จริง\/near miss ในช่วงที่ทบทวน/);   // Reassessment
+  assert.ok(pr.schema.properties.control_assessment);
+  [pi, pr].forEach((p) => assert.deepEqual(Object.keys(p.schema.properties).sort(), plain(p.schema.required).sort()));
+  const prNew = G.buildSuggestPrompt_({ mode: 'score', stage: 'residual', draft: Object.assign({}, draft, { Assess_Mode: 'New Risk' }) }, ctx);
+  assert.ok(!/ในช่วงที่ทบทวน \(เทียบ/.test(prNew.system));
   assert.throws(() => G.buildSuggestPrompt_({ mode: 'score', draft: {} }, CTX), /Risk Scenario/);
 });
 
 const scored = (over) => Object.assign({
   status: 'scored', questions: [], guidance: '',
-  inherent_impact_by_dimension: { financial: 2, legal: 0, reputation: 4, operations: 3, esg: 0 }, inherent_impact_reason: 'ir',
-  inherent_likelihood: 4, inherent_likelihood_reason: 'il',
-  residual_impact_by_dimension: { financial: 2, legal: 0, reputation: 3, operations: 2, esg: 0 }, residual_impact_reason: 'rr',
-  residual_likelihood: 5, residual_likelihood_reason: 'rl',
-  confidence: 'medium', missing_info: 'สถิติ'
+  impact_by_dimension: { financial: 2, legal: 0, reputation: 4, operations: 3, esg: 0 }, impact_reason: 'ir',
+  likelihood: 4, likelihood_reason: 'il', confidence: 'medium', missing_info: 'สถิติ', assumed_scenario: 'จอดับ 10 จุดพร้อมกัน',
+  control_assessment: [{ control_type: 'Detective', control: 'แจ้งเตือน', effect: 'reduce_impact', effectiveness: 'effective', note: '' },
+    { control_type: 'Bogus', control: 'x', effect: 'weird', effectiveness: 'weird', note: '' }, { control_type: 'Preventive', control: '', effect: 'none', effectiveness: 'partial', note: '' }]
 }, over || {});
 
-test('validateScoreSuggestion_: Impact = มิติสูงสุด, Residual ≤ Inherent, เตือนเมื่อ Residual > Medium', () => {
-  const s = G.validateScoreSuggestion_(scored());
+test('validateScoreSuggestion_ inherent: Impact = มิติสูงสุด + สถานการณ์ที่สมมติ', () => {
+  const s = G.validateScoreSuggestion_(scored(), 'inherent');
   assert.equal(s.status, 'scored');
-  assert.equal(s.scores.Inherent_Impact, 4);                 // max(2,4,3)
-  assert.equal(s.scores.Residual_Impact, 3);
-  assert.equal(s.scores.Residual_Likelihood, 4);             // 5 > 4 → ปรับลง
-  assert.equal(s.byDimension.Inherent.Reputation, 4);
-  assert.deepEqual(plain(s.inherent), { score: 16, level: 'High' });
-  assert.deepEqual(plain(s.residual), { score: 12, level: 'High' });
-  assert.match(s.notes.join(), /Likelihood/);
-  assert.match(s.notes.join(), /Mitigation plan/);           // High > Medium
+  assert.deepEqual(plain(s.scores), { Inherent_Impact: 4, Inherent_Likelihood: 4 });
   assert.equal(s.reasons.Inherent_Impact_Rationale, 'ir');
-  assert.equal(G.validateScoreSuggestion_(scored({ confidence: 'sure' })).confidence, 'low');
-  const ok = G.validateScoreSuggestion_(scored({ residual_impact_by_dimension: { financial: 2, legal: 0, reputation: 0, operations: 0, esg: 0 }, residual_likelihood: 3 }));
-  assert.ok(!/Mitigation/.test(ok.notes.join()));            // 2×3 = Low
+  assert.deepEqual(plain(s.result), { score: 16, level: 'High' });
+  assert.equal(s.assumedScenario, 'จอดับ 10 จุดพร้อมกัน');
+  assert.equal(s.controls, undefined);
+  assert.ok(!/Mitigation/.test(s.notes.join()));          // เตือน mitigation เฉพาะ Residual
+  assert.equal(G.validateScoreSuggestion_(scored({ confidence: 'sure' }), 'inherent').confidence, 'low');
+});
+
+test('validateScoreSuggestion_ residual: ไม่เกิน Inherent, ประเมิน control, เตือนเมื่อ > Medium', () => {
+  const s = G.validateScoreSuggestion_(scored({ likelihood: 5 }), 'residual', { impact: 3, likelihood: 4 });
+  assert.deepEqual(plain(s.scores), { Residual_Impact: 3, Residual_Likelihood: 4 });   // 4→3, 5→4
+  assert.match(s.notes.join(), /Residual Impact สูงกว่า Inherent/);
+  assert.match(s.notes.join(), /Mitigation plan/);       // 12 = High
+  assert.equal(s.controls.length, 2);                     // ตัดตัวที่ไม่มีชื่อ
+  assert.equal(s.controls[1].type, '');
+  assert.equal(s.controls[1].effect, 'none');
+  assert.equal(s.controls[1].effectiveness, 'partial');
+  const low = G.validateScoreSuggestion_(scored({ impact_by_dimension: { financial: 2, legal: 0, reputation: 0, operations: 0, esg: 0 }, likelihood: 3 }), 'residual', { impact: 4, likelihood: 4 });
+  assert.ok(!/Mitigation/.test(low.notes.join()));       // 2×3 = Low
 });
 
 test('validateScoreSuggestion_: need_info หรือคะแนนไม่ครบ → ไม่มีคะแนน มีแต่คำถาม', () => {
-  const n = G.validateScoreSuggestion_(scored({ status: 'need_info', questions: ['เกิดกี่ครั้ง?'], guidance: 'กรอบคิด' }));
+  const n = G.validateScoreSuggestion_(scored({ status: 'need_info', questions: ['เกิดกี่ครั้ง?'], guidance: 'กรอบคิด' }), 'residual');
   assert.equal(n.status, 'need_info');
   assert.equal(n.scores, undefined);
   assert.deepEqual(plain(n.questions), ['เกิดกี่ครั้ง?']);
-  const z = G.validateScoreSuggestion_(scored({ inherent_impact_by_dimension: { financial: 0, legal: 0, reputation: 9, operations: 0, esg: 0 } }));
-  assert.equal(z.status, 'need_info');                       // 9 นอกช่วง → ไม่มีมิติใดถูกให้คะแนน
+  const z = G.validateScoreSuggestion_(scored({ impact_by_dimension: { financial: 0, legal: 0, reputation: 9, operations: 0, esg: 0 } }), 'inherent');
+  assert.equal(z.status, 'need_info');
   assert.ok(z.questions.length);
 });
 
-test('intakeResponse_: คำถามตามข้อมูลที่ขาด', () => {
-  const miss = G.missingIntake_(G.normalizeRisk_({ Assess_Mode: 'Reassessment', Risk_Scenario: 'x' }));
-  const r = G.intakeResponse_(miss, 'Reassessment');
+test('intakeResponse_: คำถามและกรอบคิดตามขั้น', () => {
+  const miss = G.missingIntake_(G.normalizeRisk_({ Assess_Mode: 'Reassessment', Risk_Scenario: 'x' }), 'residual');
+  const r = G.intakeResponse_(miss, 'Reassessment', 'residual');
   assert.equal(r.status, 'need_info');
+  assert.equal(r.stage, 'residual');
   assert.equal(r.local, true);
-  assert.equal(r.questions.length, 4);
-  assert.match(r.guidance, /Reassessment/);
+  assert.equal(r.questions.length, 5);                   // Inherent, control, R3, R4, R5
+  assert.match(r.guidance, /เริ่มจากคะแนน Inherent/);
+  assert.match(G.intakeResponse_([], 'New Risk', 'inherent').guidance, /สมมติว่ายังไม่มี control/);
 });
 
 test('ช่วยร่าง: control แยก P/D/C และคะแนนที่ไม่มีเหตุผลถือว่ายังไม่ได้ให้', () => {

@@ -202,14 +202,18 @@ test('parseControls_ / joinControls_: แยก-รวม P/D/C ไป-กลั
   assert.deepEqual(plain(G.parseControls_(t)), { Preventive: 'a', Detective: '', Corrective: 'c', Other: '' });
 });
 
-test('missingIntake_: New Risk ต้องมีเหตุการณ์/ผลกระทบ/ความถี่/control; Reassessment ต้องมี R2–R6', () => {
-  const nr = (o) => plain(G.missingIntake_(G.normalizeRisk_(Object.assign({ Assess_Mode: 'New Risk' }, o))).map((m) => m.field));
-  assert.deepEqual(nr({}), ['Risk_Scenario', 'Consequences', 'Incident_Examples', 'Existing_Control']);
-  assert.deepEqual(nr({ Risk_Scenario: 's', Impact_Dimensions: 'ESG', Incident_Count: 0, Existing_Control: 'ยังไม่มี' }), []);
-  const ra = (o) => plain(G.missingIntake_(G.normalizeRisk_(Object.assign({ Assess_Mode: 'Reassessment', Risk_Scenario: 's' }, o))).map((m) => m.field));
-  assert.deepEqual(ra({ Review_Window: '1 ปี', Incident_Count: 2, Impact_Dimensions: 'Operations', Existing_Control: 'ระบบแจ้งเตือน' }),
-    ['Incident_Examples', 'Existing_Control']);                // มีเหตุการณ์ต้องมีตัวอย่าง; control ต้องแยก P/D/C
-  assert.deepEqual(ra({ Review_Window: '1 ปี', Incident_Count: 0, Impact_Dimensions: 'Operations', Existing_Control: 'Detective: แจ้งเตือน' }), []);
+test('missingIntake_: Inherent ไม่ต้องมี control; Residual ต้องมี Inherent + P/D/C (+R3–R5 ถ้า Reassessment)', () => {
+  const f = (o, stage) => plain(G.missingIntake_(G.normalizeRisk_(o), stage).map((m) => m.field));
+  assert.deepEqual(f({}, 'inherent'), ['Risk_Scenario', 'Consequences', 'Incident_Examples']);
+  assert.deepEqual(f({ Risk_Scenario: 's', Impact_Dimensions: 'ESG', Incident_Count: 0 }, 'inherent'), []);
+  const base = { Risk_Scenario: 's', Inherent_Impact: 4, Inherent_Likelihood: 3 };
+  assert.deepEqual(f(Object.assign({}, base, { Existing_Control: 'ระบบแจ้งเตือน' }), 'residual'), ['Existing_Control']);  // ต้องแยก P/D/C
+  assert.deepEqual(f(Object.assign({}, base, { Existing_Control: 'Detective: แจ้งเตือน' }), 'residual'), []);
+  assert.deepEqual(f({ Risk_Scenario: 's', Existing_Control: 'Detective: x' }, 'residual'), ['Inherent_Impact']);
+  const ra = Object.assign({ Assess_Mode: 'Reassessment', Existing_Control: 'Preventive: x' }, base);
+  assert.deepEqual(f(Object.assign({}, ra, { Review_Window: '1 ปี', Incident_Count: 2, Impact_Dimensions: 'Operations' }), 'residual'), ['Incident_Examples']);
+  assert.deepEqual(f(Object.assign({}, ra, { Review_Window: '1 ปี', Incident_Count: 0, Impact_Dimensions: 'Operations' }), 'residual'), []);
+  assert.deepEqual(f(ra, 'residual'), ['Review_Window', 'Incident_Count', 'Impact_Dimensions']);
 });
 
 test('normalizeRisk_: ฟิลด์ข้อมูลประกอบคะแนน', () => {
