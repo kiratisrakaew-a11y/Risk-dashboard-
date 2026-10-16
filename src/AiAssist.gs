@@ -114,6 +114,24 @@ function aiScoreSchema_() {
   return { type: 'object', additionalProperties: false, required: Object.keys(props), properties: props };
 }
 
+function aiClassifySchema_() {
+  return {
+    type: 'object', additionalProperties: false, required: ['candidates'],
+    properties: {
+      candidates: {
+        type: 'array',
+        items: {
+          type: 'object', additionalProperties: false, required: ['risk_type', 'risk_subtype', 'confidence', 'reason'],
+          properties: {
+            risk_type: { type: 'string' }, risk_subtype: { type: 'string' },
+            confidence: { type: 'string', enum: ['high', 'medium', 'low'] }, reason: { type: 'string' }
+          }
+        }
+      }
+    }
+  };
+}
+
 var AI_IMPROVE_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['text', 'reason'],
   properties: { text: { type: 'string' }, reason: { type: 'string' } }
@@ -205,6 +223,14 @@ function taxonomyText_(taxonomy) {
   return Object.keys(byType).map(function (k) { return '- ' + k + ': ' + byType[k].join(' | '); }).join('\n');
 }
 
+/** Taxonomy พร้อมคำอธิบาย (ใช้ตอนให้ AI แนะนำประเภท) */
+function taxonomyDetailText_(taxonomy) {
+  return (taxonomy || []).map(function (t, i) {
+    return (i + 1) + '. ' + str_(t.Risk_Type) + ' | ' + (str_(t.L2_Domain) ? str_(t.L2_Domain) + ' | ' : '') + str_(t.Risk_Subtype) +
+      (str_(t.Description_TH) ? ' — ' + str_(t.Description_TH) : '');
+  }).join('\n');
+}
+
 function riskDataText_(r, kris) {
   var lines = RISK_INPUT_FIELDS.filter(function (f) { return f !== 'Mitigation_Status'; }).map(function (f) {
     return FIELD_LABELS[f] + ': ' + (str_(r[f]) || '(ว่าง)');
@@ -243,6 +269,21 @@ function buildSuggestPrompt_(req, ctx) {
         '- confidence = ความมั่นใจตามความครบถ้วนของข้อมูล; missing_info = ข้อมูลที่ควรเพิ่มเพื่อให้คะแนนแม่นขึ้น',
       user: deptText_(ctx) + '\n\n' + scaleText_(ctx.scales) + '\n\n<data>\n' + riskDataText_(draft, req.kris) + '\n</data>',
       schema: aiScoreSchema_(), schemaName: 'risk_score'
+    };
+  }
+  if (req.mode === 'classify') {
+    if (str_(draft.Risk_Scenario).length < 10) throw new Error('กรอก Risk Scenario ก่อน แล้ว AI จะแนะนำประเภทให้');
+    return {
+      system: AI_SYSTEM_BASE + '\n\nงาน: จัดประเภทความเสี่ยงตาม Taxonomy ของบริษัท\n' +
+        '- เลือก 1–3 ตัวเลือกที่เหมาะที่สุด เรียงจากเหมาะมากไปน้อย โดยพิจารณาจากเหตุการณ์ สาเหตุ และผลกระทบ\n' +
+        '- risk_type และ risk_subtype ต้องคัดลอกจากรายการ Taxonomy ที่ให้เท่านั้น สะกดตรงทุกตัวอักษร ห้ามตั้งชื่อใหม่\n' +
+        '- confidence: high = ตรงชัดเจน, medium = เกี่ยวข้องแต่มีตัวเลือกอื่นใกล้เคียง, low = เกี่ยวข้องบางส่วน\n' +
+        '- reason: เหตุผลสั้นๆ 1 ประโยค อ้างถึงเนื้อหาในเหตุการณ์',
+      user: deptText_(ctx) + '\n\nTaxonomy (Risk Type | L2 Domain | Risk Sub-type — คำอธิบาย):\n' + taxonomyDetailText_(ctx.taxonomy) +
+        '\n\n<data>\nRisk Scenario: ' + str_(draft.Risk_Scenario) +
+        '\nRisk cause: ' + (str_(draft.Risk_Cause) || '(ว่าง)') +
+        '\nConsequences: ' + (str_(draft.Consequences) || '(ว่าง)') + '\n</data>',
+      schema: aiClassifySchema_(), schemaName: 'risk_classify'
     };
   }
   if (req.mode === 'improve') {
@@ -399,6 +440,31 @@ function validateSuggestion_(obj, taxonomy) {
   return { risk: risk, kris: kris, notes: notes, questions: questions };
 }
 
+/** ตัวเลือกประเภทจาก AI → เฉพาะคู่ที่อยู่ใน Taxonomy จริง (ตัดซ้ำ สูงสุด 3) */
+function validateClassify_(obj, taxonomy) {
+  var list = Array.isArray(obj && obj.candidates) ? obj.candidates : [];
+  var seen = {}, out = [];
+  list.forEach(function (c) {
+    if (out.length >= 3) return;
+    var type = str_(c && c.risk_type), sub = str_(c && c.risk_subtype);
+    var hit = (taxonomy || []).filter(function (t) { return str_(t.Risk_Type) === type && str_(t.Risk_Subtype) === sub; })[0];
+    if (!hit) {
+      var bySub = (taxonomy || []).filter(function (t) { return str_(t.Risk_Subtype) === sub; });
+      if (bySub.length === 1) hit = bySub[0];
+    }
+    if (!hit) return;
+    var key = str_(hit.Risk_Type) + '|' + str_(hit.Risk_Subtype);
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push({
+      type: str_(hit.Risk_Type), subtype: str_(hit.Risk_Subtype), l2: str_(hit.L2_Domain), desc: str_(hit.Description_TH),
+      confidence: ['high', 'medium', 'low'].indexOf(c.confidence) >= 0 ? c.confidence : 'low',
+      reason: str_(c.reason)
+    });
+  });
+  return { candidates: out, notes: out.length ? [] : ['AI ไม่พบประเภทที่ตรงกับ Taxonomy — กรุณาเลือกเอง หรือเพิ่มรายละเอียดใน Risk Scenario / Risk cause'] };
+}
+
 /** ผล AI แนะนำคะแนน → need_info (คำถาม) หรือคะแนนที่ระบบคิดเอง: Impact = มิติสูงสุด, Residual ≤ Inherent */
 function validateScoreSuggestion_(obj) {
   if (!obj || typeof obj !== 'object') throw new Error('AI ไม่ได้ตอบเป็น JSON object');
@@ -521,6 +587,12 @@ function aiSuggest_(u, req) {
   checkAiQuota_(u);
   var ctx = aiContext_(dept);
   var res = AiProvider.callJson(buildSuggestPrompt_(req, ctx));
+  if (req.mode === 'classify') {
+    var cl = validateClassify_(res.data, ctx.taxonomy);
+    cl.mode = 'classify';
+    cl.model = res.model;
+    return cl;
+  }
   if (req.mode === 'improve') {
     return { mode: 'improve', field: req.field, text: str_(res.data.text), reason: str_(res.data.reason), model: res.model };
   }

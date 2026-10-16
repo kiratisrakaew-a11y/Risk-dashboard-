@@ -205,3 +205,42 @@ test('ตรวจ (review): improved existing_control กลับเข้า�
   assert.ok(G.AI_DEFAULT_CRITERIA.RISK.some((c) => /Preventive \/ Detective \/ Corrective/.test(c)));
   assert.ok(G.AI_DEFAULT_CRITERIA.RISK.some((c) => /สูงกว่า Medium/.test(c)));
 });
+
+const TAX_FULL = [
+  { Risk_Type: 'Operational risk', L2_Domain: 'Operations', Risk_Subtype: 'Asset maintenance & uptime', Description_TH: 'ความพร้อมใช้งานของจอ' },
+  { Risk_Type: 'Operational risk', L2_Domain: 'Technology', Risk_Subtype: 'IT outage', Description_TH: 'ระบบล่ม' },
+  { Risk_Type: 'ESG risk', L2_Domain: 'Environmental', Risk_Subtype: 'Physical climate / natural hazards', Description_TH: 'ภัยธรรมชาติ' }
+];
+
+test('AI แนะนำประเภท: prompt มี Taxonomy พร้อมคำอธิบายและ Scenario; ต้องมี Scenario', () => {
+  const p = G.buildSuggestPrompt_({ mode: 'classify', draft: { Risk_Scenario: 'จอ LED ดับช่วงฝนตกหนัก', Risk_Cause: 'น้ำเข้าตู้ไฟ' } },
+    Object.assign({}, CTX, { taxonomy: TAX_FULL }));
+  assert.equal(p.schemaName, 'risk_classify');
+  assert.match(p.user, /1\. Operational risk \| Operations \| Asset maintenance & uptime — ความพร้อมใช้งานของจอ/);
+  assert.match(p.user, /Risk Scenario: จอ LED ดับช่วงฝนตกหนัก/);
+  assert.match(p.user, /Risk cause: น้ำเข้าตู้ไฟ/);
+  assert.match(p.system, /คัดลอกจากรายการ Taxonomy/);
+  const item = p.schema.properties.candidates.items;
+  assert.deepEqual(Object.keys(item.properties).sort(), plain(item.required).sort());
+  assert.throws(() => G.buildSuggestPrompt_({ mode: 'classify', draft: { Risk_Scenario: 'สั้น' } }, CTX), /Risk Scenario/);
+});
+
+test('validateClassify_: เฉพาะคู่ใน Taxonomy, แก้ Type จาก Sub-type, ตัดซ้ำ, สูงสุด 3', () => {
+  const r = G.validateClassify_({ candidates: [
+    { risk_type: 'Operational risk', risk_subtype: 'Asset maintenance & uptime', confidence: 'high', reason: 'จอดับ' },
+    { risk_type: 'Made up', risk_subtype: 'Physical climate / natural hazards', confidence: 'medium', reason: 'ฝน' },   // แก้ Type ให้
+    { risk_type: 'Operational risk', risk_subtype: 'Asset maintenance & uptime', confidence: 'low', reason: 'ซ้ำ' },
+    { risk_type: 'X', risk_subtype: 'Not in taxonomy', confidence: 'high', reason: 'ไม่มีจริง' },
+    { risk_type: 'Operational risk', risk_subtype: 'IT outage', confidence: 'weird', reason: 'cms' }
+  ] }, TAX_FULL);
+  assert.deepEqual(plain(r.candidates.map((c) => c.subtype)), ['Asset maintenance & uptime', 'Physical climate / natural hazards', 'IT outage']);
+  assert.equal(r.candidates[1].type, 'ESG risk');
+  assert.equal(r.candidates[0].l2, 'Operations');
+  assert.equal(r.candidates[0].desc, 'ความพร้อมใช้งานของจอ');
+  assert.equal(r.candidates[2].confidence, 'low');
+  assert.equal(r.notes.length, 0);
+  const none = G.validateClassify_({ candidates: [{ risk_type: 'X', risk_subtype: 'Y', confidence: 'high', reason: '' }] }, TAX_FULL);
+  assert.equal(none.candidates.length, 0);
+  assert.match(none.notes[0], /เลือกเอง/);
+  assert.equal(G.validateClassify_(null, TAX_FULL).candidates.length, 0);
+});

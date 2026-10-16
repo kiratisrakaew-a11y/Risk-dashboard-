@@ -534,6 +534,42 @@
       '<button type="button" class="btn ghost" data-closescore="1">ปิด</button><span class="small muted">"ใช้" = ใส่ระดับและเหตุผลลงช่อง Rationale (แก้ต่อได้)</span></div>' + disclaimer() + '</div>';
   }
 
+  // ---- AI แนะนำ Risk Type / Sub-type จาก Risk Scenario ----
+  var CONF_BADGE = { high: 'good', medium: 'warn', low: '' };
+  function classifyHtml(c) {
+    if (!c) return '';
+    if (c.loading) return '<div class="sugg small muted"><span class="spinner" style="display:inline-block;width:12px;height:12px;vertical-align:-2px"></span> AI กำลังวิเคราะห์ประเภทจาก Risk Scenario…</div>';
+    if (c.error) return '<div class="sugg small" style="color:var(--bad)">' + esc(c.error) + ' <button type="button" class="linkbtn" data-closetype="1">ปิด</button></div>';
+    return '<div class="ai-panel" style="margin:6px 0 12px"><h4>✨ ประเภทที่ AI แนะนำจาก Risk Scenario</h4>' +
+      (c.notes && c.notes.length ? '<div class="warn-box">' + c.notes.map(esc).join('\n') + '</div>' : '') +
+      (c.candidates || []).map(function (x, i) {
+        return '<div class="sugg"><div class="sugg-head"><span><b>' + esc(x.type) + '</b> › ' + (x.l2 ? esc(x.l2) + ' › ' : '') + '<b>' + esc(x.subtype) + '</b> ' +
+          '<span class="badge ' + (CONF_BADGE[x.confidence] || '') + '">' + esc(CONF_LABEL[x.confidence] || x.confidence) + '</span></span>' +
+          (form.canEdit ? '<button type="button" class="linkbtn" data-usetype="' + i + '">ใช้</button>' : '') + '</div>' +
+          '<div class="txt">' + esc(x.reason) + '</div>' + (x.desc ? '<div class="small muted">' + esc(x.desc) + '</div>' : '') + '</div>';
+      }).join('') +
+      '<div class="section-actions"><button type="button" class="btn ghost" data-closetype="1">ปิด</button><span class="small muted">เลือกเองจาก dropdown ได้เสมอ</span></div>' + disclaimer() + '</div>';
+  }
+  function renderClassifyBox() { if ($('classifyBox')) $('classifyBox').innerHTML = classifyHtml(form && form.classify); }
+  function runClassify(manual) {
+    collectForm();
+    var text = String(form.risk.Risk_Scenario || '').trim();
+    if (text.length < 10) { if (manual) toast('กรอก Risk Scenario ก่อน แล้ว AI จะแนะนำประเภทให้'); return; }
+    var f = form;
+    f.classifiedText = text;
+    f.classify = { loading: true };
+    renderClassifyBox();
+    call('apiAiSuggest', [{ mode: 'classify', dept: f.dept, draft: f.risk, kris: [] }]).then(function (r) {
+      if (form !== f) return;
+      f.classify = r;
+      renderClassifyBox();
+    }).catch(function (e) {
+      if (form !== f) return;
+      f.classify = { error: errMsg(e) };
+      renderClassifyBox();
+    });
+  }
+
   function suggestionHtml(sg) {
     if (!sg) return '';
     var fields = Object.keys(sg.risk).filter(function (f) { return sg.risk[f] !== '' && sg.risk[f] !== null; });
@@ -580,9 +616,11 @@
     if (form.isNew && editableDepts().length > 1) {
       html += '<div class="f"><label>แผนก (Business unit)</label><select id="fDept">' + opt(editableDepts().map(function (d) { return { v: d.code, t: d.code + ' · ' + d.name }; }), form.dept) + '</select></div>';
     }
-    html += '<div class="row2"><div class="f"><label>Risk Type</label><select data-f="Risk_Type"' + dis + '><option value="">– เลือก –</option>' + opt(Object.keys(types).sort(), r.Risk_Type) + '</select></div>' +
+    var typeBtn = form.canEdit && INIT.cfg.aiEnabled ? '<button type="button" class="linkbtn" id="btnAiType">✨ AI แนะนำประเภท</button>' : '';
+    html += '<div class="row2"><div class="f"><label><span>Risk Type</span>' + typeBtn + '</label><select data-f="Risk_Type"' + dis + '><option value="">– เลือก –</option>' + opt(Object.keys(types).sort(), r.Risk_Type) + '</select></div>' +
       '<div class="f"><label>Risk Sub-type</label><select data-f="Risk_Subtype"' + dis + '>' + subtypeOptions(r.Risk_Type, r.Risk_Subtype) + '</select></div></div>' +
       '<div class="hint-box' + (tax && tax.desc ? '' : ' hidden') + '" id="taxHint">' + esc(tax ? tax.desc : '') + '</div>' +
+      '<div id="classifyBox">' + classifyHtml(form.classify) + '</div>' +
       fieldHtml('Risk_Scenario', 'textarea') + fieldHtml('Risk_Cause', 'textarea') + fieldHtml('Consequences', 'textarea') + '</fieldset>';
     var reassess = r.Assess_Mode === 'Reassessment';
     var dimsSel = String(r.Impact_Dimensions || '').split(/\s*,\s*/);
@@ -668,6 +706,10 @@
         form.risk.Risk_Subtype = '';
         body.querySelector('[data-f="Risk_Subtype"]').innerHTML = subtypeOptions(t.value, '');
         $('taxHint').classList.add('hidden');
+      } else if (f === 'Risk_Scenario') {
+        // แนะนำประเภทอัตโนมัติเมื่อยังไม่ได้เลือก Risk Type (ครั้งเดียวต่อข้อความ)
+        var txt = String(t.value || '').trim();
+        if (form.canEdit && INIT.cfg.aiEnabled && !form.risk.Risk_Type && txt.length >= 20 && txt !== form.classifiedText) runClassify(false);
       } else if (f === 'Assess_Mode') {
         collectForm();
         form.scoreSuggestion = null;
@@ -734,6 +776,17 @@
         if (t.dataset.useallscore) toast('ใส่คะแนนจาก AI แล้ว — ตรวจทานเหตุผลก่อนบันทึก');
         return;
       }
+      if (t.dataset.usetype !== undefined) {
+        collectForm();
+        var pick = form.classify.candidates[Number(t.dataset.usetype)];
+        form.risk.Risk_Type = pick.type;
+        form.risk.Risk_Subtype = pick.subtype;
+        form.classify = null;
+        form.dirty = true;
+        rerenderKeepScroll();
+        return;
+      }
+      if (t.dataset.closetype) { form.classify = null; renderClassifyBox(); return; }
       if (t.dataset.closescore) { collectForm(); form.scoreSuggestion = null; rerenderKeepScroll(); return; }
       if (t.dataset.gofield) {
         var target = body.querySelector('[data-f="' + t.dataset.gofield + '"]') || body.querySelector('[data-ctl="Preventive"]') || body.querySelector('[data-dim]');
@@ -754,6 +807,7 @@
     if ($('btnAiDraft')) $('btnAiDraft').onclick = function () { $('draftBox').classList.toggle('hidden'); if (!$('draftBox').classList.contains('hidden')) $('draftBrief').focus(); $('drawerBody').scrollTop = 0; };
     if ($('btnDraftGo')) $('btnDraftGo').onclick = aiDraft;
     if ($('btnAiScore')) $('btnAiScore').onclick = aiScore;
+    if ($('btnAiType')) $('btnAiType').onclick = function () { runClassify(true); };
   }
 
   function rerenderKeepScroll() {
