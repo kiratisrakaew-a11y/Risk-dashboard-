@@ -1,10 +1,12 @@
 {
   "name": "risk-dashboard",
   "private": true,
-  "description": "Risk Register & KRI Tracking (Google Apps Script web app) แยกสิทธิ์ตามแผนก + AI ช่วยเขียน/ตรวจ",
+  "description": "Risk Register & KRI Tracking (Google Apps Script web app / Google Cloud Run) แยกสิทธิ์ตามแผนก + AI ช่วยเขียน/ตรวจ",
   "scripts": {
     "test": "node --test tests/*.test.js",
     "check": "node scripts/check-syntax.js && node --test tests/*.test.js",
-    "push": "node scripts/check-syntax.js && clasp push"
+    "push": "node scripts/check-syntax.js && clasp push",
+    "check:cloud": "cd cloud && npm test",
+    "deploy:cloud": "gcloud run deploy risk-register --source . --region asia-southeast1"
   }
 }

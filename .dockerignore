@@ -1,0 +1,7 @@
+.git
+**/node_modules
+tests
+scripts
+cloud/test
+*.md
+.clasp*

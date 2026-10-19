@@ -1,0 +1,19 @@
+{
+  "name": "risk-register-cloud",
+  "private": true,
+  "description": "Risk Register & KRI บน Google Cloud Run + Firestore — ใช้ business logic ชุดเดียวกับ ../src/*.gs",
+  "main": "server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "DEV_USER=admin@co.th MEMORY_DB=1 node server.js",
+    "test": "node --test test/*.test.js",
+    "migrate": "node migrate.js"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.11.0",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "google-auth-library": "^9.15.0"
+  }
+}

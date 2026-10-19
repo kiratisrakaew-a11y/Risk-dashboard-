@@ -3,6 +3,12 @@
 Web App (Google Apps Script) ให้แต่ละหน่วยงานกรอก **Risk Register** และติดตาม **Key Risk Indicator (KRI)** แทนการกรอกใน Google Sheet `RISK_REGISTER_TEMPLATE`
 แยกสิทธิ์ตามแผนก และทุกแผนกดู Dashboard ของตัวเองได้ มี **AI ช่วยเขียนและช่วยตรวจ** ด้วย (ค่าเริ่มต้น Gemini 3.1 Pro `gemini-3.1-pro-preview` เปลี่ยนเป็น Claude หรือ OpenAI ได้)
 
+> **มี 2 แบบ ใช้ business logic ชุดเดียวกัน (`src/*.gs`)**
+> - **Apps Script** — ติดตั้งตามหัวข้อ [ติดตั้ง](#ติดตั้ง) ด้านล่าง
+> - **Google Cloud (Cloud Run + Firestore)** — เร็วกว่ามาก ดูวิธีติดตั้งที่ [`cloud/README.md`](cloud/README.md)
+>
+> กฎทางธุรกิจทั้งหมด + test ที่ตรวจแต่ละข้อ: [`docs/BUSINESS_RULES.md`](docs/BUSINESS_RULES.md)
+
 ## ความสามารถ
 
 | หน้า | เนื้อหา |
@@ -116,6 +122,7 @@ Web App (Google Apps Script) ให้แต่ละหน่วยงานก
 npm test          # unit test (Node ≥ 20): การคำนวณระดับ, งวด/สถานะ KRI, สิทธิ์, Dashboard (ไม่รั่วข้ามแผนก), AI prompt/validate, provider
 npm run check     # ตรวจ syntax ของ .gs และ <script> ใน HTML แล้วรัน test
 npm run push      # check syntax แล้ว clasp push
+npm run check:cloud   # test ของเวอร์ชัน Cloud (ต้อง cd cloud && npm ci ก่อน)
 ```
 
 ```
@@ -134,5 +141,8 @@ src/
   Export.gs      Export เป็น Google Sheet รูปแบบเดิม
   Triggers.gs    trigger + อีเมลแจ้งเตือน
   ui/            หน้าเว็บ (HTML Service + Chart.js)
-tests/           unit test (ข้อมูลสมมติ)
+tests/           unit test (ข้อมูลสมมติ) + flows.test.js ทดสอบ business rule ระดับ API
+cloud/           เวอร์ชัน Google Cloud Run + Firestore (ดู cloud/README.md)
+docs/            BUSINESS_RULES.md
+Dockerfile       build image สำหรับ Cloud Run
 ```

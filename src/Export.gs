@@ -36,9 +36,8 @@ var LEGACY_HEADERS = ['Risk NO.', 'Assessment Period', 'Business unit', 'Risk ID
   'Residual Likelihood', 'Residual Likelihood rationale', 'Residual risk Level', 'Mitigation plan', 'Mitigation plan due date',
   'Risk Owner', 'Leading Key risk indicator', 'Lagging Key risk indicator', 'Green', 'Amber Status', 'Red Status'];
 
-/** dept ว่าง = ทุกแผนก (ADMIN) */
-function exportRegister_(dept, period, u) {
-  var cfg = getConfig_();
+/** ข้อมูลสำหรับ export (dept ว่าง = ทุกแผนก) — ใช้ร่วมกันทั้ง Apps Script (Google Sheet) และ Cloud (.xlsx) */
+function exportData_(dept, period, u) {
   var deptName = {};
   Db.readAll('Departments').forEach(function (d) { deptName[str_(d.Dept_Code).toUpperCase()] = str_(d.Dept_Name) || d.Dept_Code; });
   var risks = Db.readAll('Risks').filter(function (r) {
@@ -50,8 +49,23 @@ function exportRegister_(dept, period, u) {
   var krisByRisk = {};
   Db.readAll('KRIs').forEach(function (k) { (krisByRisk[k.Risk_ID] = krisByRisk[k.Risk_ID] || []).push(k); });
   var rows = risks.map(function (r) { return riskToLegacyRow_(r, krisByRisk[r.Risk_ID], deptName[str_(r.Business_Unit).toUpperCase()]); });
-
+  var approval = null;
+  if (dept) {
+    var a = Db.readAll('Approvals').filter(function (x) { return str_(x.Dept_Code).toUpperCase() === dept && str_(x.Assessment_Period) === period; })[0];
+    if (a) approval = {
+      assessor: str_(a.Assessor), assessedAt: str_(a.Assessed_At).slice(0, 10),
+      approver: str_(a.Approver) + (a.Status !== 'Approved' ? ' (' + a.Status + ')' : ''), approvedAt: str_(a.Approved_At).slice(0, 10)
+    };
+  }
   var name = 'Risk Register — ' + (dept ? deptName[dept] || dept : 'ทุกแผนก') + ' — ' + period + ' (' + isoDate_(new Date()) + ')';
+  return { name: name, headers: LEGACY_HEADERS, rows: rows, approval: approval };
+}
+
+/** dept ว่าง = ทุกแผนก (ADMIN) */
+function exportRegister_(dept, period, u) {
+  var cfg = getConfig_();
+  var data = exportData_(dept, period, u);
+  var rows = data.rows, name = data.name;
   var out = SpreadsheetApp.create(name);
   var sheet = null;
   try {
@@ -74,14 +88,11 @@ function exportRegister_(dept, period, u) {
   }
   // ผู้ประเมิน/ผู้อนุมัติ (เฉพาะ export รายแผนก)
   var ar = out.getSheetByName('Assesment/Review person');
-  if (ar && dept) {
-    var a = Db.readAll('Approvals').filter(function (x) { return str_(x.Dept_Code).toUpperCase() === dept && str_(x.Assessment_Period) === period; })[0];
-    if (a) {
-      ar.getRange('B1').setValue(str_(a.Assessor));
-      ar.getRange('D1').setValue(str_(a.Assessed_At).slice(0, 10));
-      ar.getRange('B2').setValue(str_(a.Approver) + (a.Status !== 'Approved' ? ' (' + a.Status + ')' : ''));
-      ar.getRange('D2').setValue(str_(a.Approved_At).slice(0, 10));
-    }
+  if (ar && data.approval) {
+    ar.getRange('B1').setValue(data.approval.assessor);
+    ar.getRange('D1').setValue(data.approval.assessedAt);
+    ar.getRange('B2').setValue(data.approval.approver);
+    ar.getRange('D2').setValue(data.approval.approvedAt);
   }
   out.setActiveSheet(sheet);
   try { DriveApp.getFileById(out.getId()).addEditor(u.email); } catch (e) { console.warn('แชร์ไฟล์ไม่ได้: ' + e.message); }

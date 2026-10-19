@@ -199,7 +199,10 @@
 
   // ---------------- init ----------------
   function start() {
-    call('apiInit').then(function (d) {
+    // เวอร์ชัน Cloud ส่งข้อมูลเริ่มต้นมากับหน้าเว็บ (ไม่ต้องเรียก server อีกรอบ)
+    var pre = window.INIT_DATA ? Promise.resolve(window.INIT_DATA) : call('apiInit');
+    window.INIT_DATA = null;
+    pre.then(function (d) {
       INIT = d;
       $('subtitle').textContent = d.user.name + ' · ' + d.user.role + (d.depts.length === 1 ? ' · ' + d.depts[0].name : '');
       if (d.user.isAdmin) $('tabSettings').classList.remove('hidden');
@@ -435,7 +438,7 @@
     busy(btn, true, 'กำลังสร้างไฟล์…');
     call('apiExport', [dept, period]).then(function (r) {
       busy(btn, false);
-      openDrawer('Export สำเร็จ', '<p>' + esc(r.name) + '</p><p>' + r.rows + ' รายการ</p><p><a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noopener">เปิด Google Sheet</a></p>');
+      openDrawer('Export สำเร็จ', '<p>' + esc(r.name) + '</p><p>' + r.rows + ' รายการ</p><p><a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.label || 'เปิด Google Sheet') + '</a></p>');
     }).catch(function (e) { busy(btn, false); toast(errMsg(e)); });
   }
 
