@@ -17,7 +17,29 @@ cloud/
 
 ---
 
-## ติดตั้งครั้งแรก (ทำใน Cloud Shell ทีละขั้น)
+## ติดตั้งแบบเร็ว (แนะนำ) — 3 ขั้น
+
+1. **หน้าเว็บ:** สร้างโปรเจกต์ที่ https://console.cloud.google.com/projectcreate (Organization = `planbmedia.co.th`)
+   แล้วผูก billing ที่ https://console.cloud.google.com/billing/linkedaccount — จด **Project ID**
+2. **Cloud Shell:** (ระหว่างทางจะถาม Gemini API key และให้ login 1 ครั้งเพื่ออ่าน Google Sheet)
+   ```bash
+   cd ~/Risk-dashboard- && git pull
+   bash cloud/setup-gcp.sh <PROJECT_ID>
+   ```
+   สคริปต์ทำขั้น 2–5 และ 7 ด้านล่างให้ทั้งหมด (เปิดบริการ, Firestore, service account, secret, ย้ายข้อมูล, deploy, ตั้งเวลา) — รันซ้ำได้
+3. **หน้าเว็บ:** สร้าง OAuth Client ID ตามที่สคริปต์พิมพ์บอกตอนจบ (ขั้น 6 ด้านล่าง) แล้วรันคำสั่ง `gcloud run services update …` ที่ให้มา
+
+อัปเดตโค้ดครั้งต่อไป: `git pull && SKIP_MIGRATE=1 bash cloud/setup-gcp.sh <PROJECT_ID>`
+
+## วันเปลี่ยนระบบจริง
+1. แจ้งทุกแผนกหยุดกรอกในระบบเดิม (Apps Script) ชั่วคราว
+2. ย้ายข้อมูลล่าสุดทับของเดิม: `MIGRATE_REPLACE=1 bash cloud/setup-gcp.sh <PROJECT_ID>`
+3. ตรวจตาม checklist ใน [`docs/BUSINESS_RULES.md`](../docs/BUSINESS_RULES.md) แล้วส่ง URL ใหม่ให้ทุกแผนก
+4. ปิด/เปลี่ยนเส้นทางระบบเดิม (ทำแยก — ตัดสินใจอีกครั้ง)
+
+---
+
+## ติดตั้งครั้งแรกแบบทีละขั้น (อ้างอิง / แก้ปัญหา)
 
 ตัวอย่างใช้ชื่อโปรเจกต์ `planb-risk-register` — เปลี่ยนเป็นชื่อจริงได้ (ต้องไม่ซ้ำกับใครในโลก)
 
