@@ -1255,7 +1255,7 @@
       '<div class="card"><h3>คำอธิบายค่า KRI ที่เป็น Amber/Red</h3><textarea id="critKRI_COMMENT" style="width:100%;min-height:240px">' + esc(d.criteria.KRI_COMMENT) + '</textarea><div class="section-actions"><button class="btn" data-savecrit="KRI_COMMENT">บันทึก</button></div></div></div>';
     html += '<h2>นำเข้าข้อมูลจาก Google Sheet เดิม</h2><div class="card"><div class="form-row"><label>ลิงก์ Sheet (ต้องมีชีต RISK_REGISTER)</label><input type="text" id="impUrl" placeholder="https://docs.google.com/spreadsheets/d/…"></div>' +
       '<div class="form-row"><label>งวดประเมิน (ถ้าแถวไม่ระบุ)</label><input type="text" id="impPeriod" value="' + esc(s.ASSESSMENT_PERIOD) + '"></div>' +
-      '<div class="section-actions"><button class="btn" id="btnImport">นำเข้า</button><span class="small muted">ข้าม Risk ID ที่มีอยู่แล้ว · สร้างแผนกจาก Business unit ให้อัตโนมัติ · KRI ที่นำเข้าเป็นแบบเชิงคุณภาพ</span></div><div id="impMsg"></div></div>';
+      '<div class="section-actions"><button class="btn" id="btnImport">ตรวจสอบก่อนนำเข้า</button><span class="small muted">ระบบจะแสดงตัวอย่างให้ตรวจก่อน ยังไม่บันทึกจนกว่าจะกดยืนยัน · ข้าม Risk ID ที่มีอยู่แล้ว · KRI ที่นำเข้าเป็นแบบเชิงคุณภาพ</span></div><div id="impMsg"></div></div>';
     html += '<h2>Export ทุกแผนก</h2><div class="card section-actions"><button class="btn ghost" id="btnExportAll">⇩ Export งวด ' + esc(state.period) + ' ทุกแผนก</button></div>';
     el.innerHTML = html;
     sortable($('tblUsers'));
@@ -1279,14 +1279,53 @@
         .catch(function (e) { busy(b, false); toast(errMsg(e)); });
     };
     $('btnImport').onclick = function () {
-      var b = this; busy(b, true, 'กำลังนำเข้า…');
-      call('apiImportLegacy', [$('impUrl').value, $('impPeriod').value]).then(function (r) {
-        busy(b, false); invalidate();
-        $('impMsg').innerHTML = '<div class="warn-box">นำเข้า ' + r.risks + ' ความเสี่ยง, ' + r.kris + ' KRI · ข้าม ' + r.skipped + ' (มี Risk ID แล้ว)' +
-          (r.deptsCreated.length ? '\nสร้างแผนกใหม่: ' + r.deptsCreated.map(esc).join(', ') + '\n→ ตรวจรหัส/ชื่อ และกำหนดผู้อนุมัติ' : '') + '\n' + esc(r.note) + '</div>';
+      var b = this, url = $('impUrl').value, period = $('impPeriod').value;
+      busy(b, true, 'กำลังตรวจสอบ…');
+      $('impMsg').innerHTML = '';
+      call('apiImportLegacy', [url, period, true]).then(function (r) {
+        busy(b, false);
+        $('impMsg').innerHTML = importPreviewHtml(r);
+        var go = $('btnImportGo');
+        if (go) go.onclick = function () {
+          if ($('impUrl').value !== url || $('impPeriod').value !== period) { $('impMsg').innerHTML = ''; return toast('ลิงก์หรืองวดเปลี่ยน — กดตรวจสอบใหม่'); }
+          busy(go, true, 'กำลังนำเข้า…');
+          call('apiImportLegacy', [url, period, false]).then(function (d) {
+            invalidate();
+            $('impMsg').innerHTML = '<div class="warn-box">✓ นำเข้าแล้ว ' + d.risks + ' ความเสี่ยง, ' + d.kris + ' KRI · ข้าม ' + d.skipped +
+              (d.deptsCreated.length ? '\nสร้างแผนกใหม่: ' + d.deptsCreated.map(esc).join(', ') + ' → ตรวจรหัส/ชื่อ และกำหนดผู้อนุมัติ' : '') +
+              '\nดูข้อมูลได้ที่แท็บ Risk Register โดยเลือก ' + d.byTarget.map(function (t) { return 'แผนก ' + esc(t.dept) + ' งวด ' + esc(t.period); }).join(', ') +
+              ' (ถ้ายังไม่มีในรายการ ให้กด F5)\n' + esc(d.note) + '</div>';
+          }).catch(function (e) { busy(go, false); toast(errMsg(e)); });
+        };
       }).catch(function (e) { busy(b, false); $('impMsg').innerHTML = '<div class="err-box">' + esc(errMsg(e)) + '</div>'; });
     };
+    // แก้ลิงก์/งวดหลังตรวจสอบ → ล้างผลตรวจ (กันยืนยันผลเก่า)
+    ['impUrl', 'impPeriod'].forEach(function (id) { $(id).oninput = function () { $('impMsg').innerHTML = ''; }; });
     $('btnExportAll').onclick = function () { doExport('', state.period, this); };
+  }
+
+  /** ผลตรวจสอบก่อนนำเข้า: สรุป + ไปลงแผนก/งวดไหน + รายแถว */
+  function importPreviewHtml(r) {
+    var label = { 'new': '<span class="badge good">นำเข้า</span>', skip: '<span class="badge warn">ข้าม</span>', empty: '<span class="badge">แถวว่าง</span>' };
+    var html = '<div class="card" style="margin-top:12px"><h3>ผลตรวจสอบ (ยังไม่ได้บันทึก)</h3>' +
+      '<p>จะนำเข้า <b>' + r.risks + '</b> ความเสี่ยง, <b>' + r.kris + '</b> KRI · ข้าม ' + r.skipped + ' (มี Risk ID แล้ว/ซ้ำในไฟล์) · แถวไม่มี Scenario ' + r.empty + '</p>';
+    if (r.deptsCreated.length) html += '<div class="warn-box">จะสร้างแผนกใหม่: ' + r.deptsCreated.map(esc).join(', ') + ' — ถ้าควรเป็นแผนกที่มีอยู่ ให้แก้ Business unit ในไฟล์ให้ตรงชื่อ/รหัสแผนกก่อน</div>';
+    if (r.byTarget.length) {
+      html += '<table><thead><tr><th>แผนก</th><th>งวดประเมิน</th><th class="num">จำนวน</th></tr></thead><tbody>' +
+        r.byTarget.map(function (t) { return '<tr><td>' + esc(t.dept + ' · ' + t.deptName) + '</td><td>' + esc(t.period) + '</td><td class="num">' + t.count + '</td></tr>'; }).join('') + '</tbody></table>';
+    }
+    var warn = r.rows.filter(function (x) { return x.problems.length; }).length;
+    html += '<details' + (r.rows.length <= 30 ? ' open' : '') + ' style="margin-top:8px"><summary>รายการทั้งหมด ' + r.rows.length + ' แถว' + (warn ? ' · มีข้อควรตรวจ ' + warn + ' แถว' : '') + '</summary>' +
+      '<div class="table-wrap"><table><thead><tr><th>แถว</th><th>Risk ID</th><th>แผนก</th><th>งวด</th><th>ประเภท</th><th>Risk Scenario</th><th>KRI</th><th>สถานะ</th></tr></thead><tbody>' +
+      r.rows.map(function (x) {
+        return '<tr><td class="num">' + x.row + '</td><td class="nowrap">' + esc(x.riskId) + '</td><td>' + esc(x.dept || x.deptName) + '</td><td class="nowrap">' + esc(x.period) + '</td>' +
+          '<td class="small">' + esc(x.type) + '<div class="muted">' + esc(x.subtype) + '</div></td><td class="desc small">' + esc(x.scenario) +
+          (x.problems.length ? '<div class="warn-box small" style="margin-top:4px">' + x.problems.map(esc).join('<br>') + '</div>' : '') + '</td>' +
+          '<td class="num">' + (x.kriCount || '') + '</td><td>' + (label[x.action] || '') + '</td></tr>';
+      }).join('') + '</tbody></table></div></details>';
+    html += '<div class="section-actions"><button class="btn" id="btnImportGo"' + (r.risks ? '' : ' disabled') + '>ยืนยันนำเข้า ' + r.risks + ' รายการ</button>' +
+      '<span class="small muted">ข้อควรตรวจเป็นคำเตือน นำเข้าได้ แล้วค่อยแก้ในฟอร์ม Risk</span></div></div>';
+    return html;
   }
 
   function editUser(u, d) {

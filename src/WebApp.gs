@@ -579,11 +579,11 @@ function apiSaveCriteria(scope, text) {
   return apiAdminData();
 }
 
-function apiImportLegacy(urlOrId, period) {
+function apiImportLegacy(urlOrId, period, dryRun) {
   var u = requireAdmin_();
   var id = String(urlOrId || '').match(/[-\w]{25,}/);
   if (!id) throw new Error('ลิงก์ Google Sheet ไม่ถูกต้อง');
-  return JSON.stringify(importLegacyRegister_(id[0], String(period || getConfig_().ASSESSMENT_PERIOD), u.email));
+  return JSON.stringify(importLegacyRegister_(id[0], String(period || getConfig_().ASSESSMENT_PERIOD), u.email, !!dryRun));
 }
 
 function apiExport(dept, period) {

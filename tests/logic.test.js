@@ -252,3 +252,37 @@ test('Dashboard รวมกลุ่ม Risk Type ที่สะกดต่�
   assert.equal(d.byType.length, 1);
   assert.equal(d.byType[0].total, 2);
 });
+
+test('planLegacyImport_: นำเข้า / ข้าม (มีแล้ว, ซ้ำในไฟล์) / แถวว่าง / แผนกใหม่ / คำเตือน Taxonomy / สรุปตามแผนก-งวด', () => {
+  const row = (o) => { const r = Array.from({ length: 28 }, () => ''); Object.keys(o).forEach((k) => { r[k] = o[k]; }); return r; };
+  const full = { 9: 3, 10: 'เหตุผล', 11: 3, 12: 'เหตุผล', 14: 'Preventive: ตรวจ', 15: 2, 16: 'เหตุผล', 17: 2, 18: 'เหตุผล', 7: 'สาเหตุ', 8: 'ผลกระทบ', 22: 'IT Manager' };
+  const values = [
+    row(Object.assign({ 1: '2026', 2: 'Information Technology', 3: '', 4: 'Operational Risk', 5: 'IT system outage', 6: 'ระบบล่ม', 23: 'downtime' }, full)),
+    row({ 2: 'Information Technology', 3: 'IT-R-001', 4: 'Operational risk', 5: 'IT system outage', 6: 'มีอยู่แล้ว' }),
+    row({ 2: 'Information Technology', 3: 'X-1', 6: 'แถวแรก', 4: 'Operational risk', 5: 'IT system outage' }),
+    row({ 2: 'Information Technology', 3: 'X-1', 6: 'ซ้ำในไฟล์' }),
+    row({ 2: 'ฝ่ายใหม่', 6: 'แผนกที่ไม่รู้จัก', 4: 'Fake', 5: 'Nope' }),
+    row({ 2: 'Information Technology', 4: 'Operational risk' }),
+    row({})
+  ];
+  const p = G.planLegacyImport_(values, {
+    depts: [{ Dept_Code: 'IT', Dept_Name: 'Information Technology', Is_Active: 'TRUE' }],
+    riskIds: ['IT-R-001', 'IT-R-002'], kriIds: [], taxonomy: [{ Risk_Type: 'Operational risk', Risk_Subtype: 'IT system outage' }],
+    defaultPeriod: 'Q4/2569', email: 'a@x', now: '2026-10-20T10:00:00'
+  });
+  assert.deepEqual(plain(p.rows.map((r) => r.action)), ['new', 'skip', 'new', 'skip', 'new', 'empty']);
+  assert.deepEqual(plain(p.rows.map((r) => r.row)), [2, 3, 4, 5, 6, 7]);
+  assert.equal(p.rows[0].riskId, 'IT-R-003'); // ต่อจากเลขเดิม
+  assert.equal(p.rows[0].type, 'Operational risk'); // รวมตัวสะกด
+  assert.equal(p.rows[0].kriCount, 1);
+  assert.equal(p.rows[0].problems.length, 0);
+  assert.match(p.rows[1].problems[0], /มี Risk ID นี้ในระบบแล้ว/);
+  assert.match(p.rows[3].problems[0], /ซ้ำกับแถว 4/);
+  assert.ok(p.rows[4].problems.some((x) => /จะสร้างแผนกใหม่/.test(x)));
+  assert.ok(p.rows[4].problems.some((x) => /Taxonomy/.test(x)));
+  assert.equal(p.risks.length, 3);
+  assert.equal(p.skipped, 2);
+  assert.equal(p.empty, 1);
+  assert.equal(p.newDepts.length, 1);
+  assert.deepEqual(plain(p.byTarget).map((t) => [t.dept, t.period, t.count]), [['IT', '2026', 1], ['IT', 'Q4/2569', 1], [p.newDepts[0].Dept_Code, 'Q4/2569', 1]]);
+});

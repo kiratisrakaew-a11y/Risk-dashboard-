@@ -107,3 +107,24 @@ test('ความเสี่ยงใหม่เป็น New Risk เสม�
   await run('admin@co.th', 'apiSaveRisk', { dept: 'FIN', risk: Object.assign({}, risk, { Mitigation_Plan: 'x', Mitigation_Due_Date: '2026-12-31' }), kris: [] });
   assert.equal((await store.load('Risks')).find((r) => r.Risk_ID === 'OPS-R-003').Business_Unit, 'OPS');
 });
+
+test('นำเข้าจาก Google Sheet: ตรวจสอบก่อน (ไม่บันทึก) → ยืนยันแล้วบันทึกตามที่ตรวจ; เฉพาะ ADMIN', async () => {
+  const header = Array.from({ length: 28 }, (_, i) => 'H' + i);
+  const r1 = Array.from({ length: 28 }, () => ''); Object.assign(r1, { 1: '2026', 2: 'OPS', 6: 'จอดับ', 4: 'Operational risk', 5: 'IT system outage', 23: 'KRI ก' });
+  const r2 = Array.from({ length: 28 }, () => ''); Object.assign(r2, { 2: 'OPS', 3: 'OPS-R-001', 6: 'มีแล้ว' });
+  const seed = JSON.parse(JSON.stringify(SEED));
+  const store = new MemoryStore(seed);
+  const rt = createRuntime({ store, props: {}, fetchImpl: async () => ({ code: 500, body: '' }), sheetLoader: async (id, name) => (name === 'RISK_REGISTER' ? [header, r1, r2] : null) });
+  const url = 'https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789/edit';
+  const before = store.commits;
+  const pre = JSON.parse((await rt.run('apiImportLegacy', [url, '2026', true], { email: 'admin@co.th' })).value);
+  assert.equal(pre.dryRun, true);
+  assert.equal(pre.risks, 1);
+  assert.equal(pre.skipped, 1);
+  assert.equal(store.commits, before, 'ตรวจสอบต้องไม่บันทึก');
+  const done = JSON.parse((await rt.run('apiImportLegacy', [url, '2026', false], { email: 'admin@co.th' })).value);
+  assert.equal(done.dryRun, false);
+  assert.deepEqual(done.rows.map((x) => x.riskId), pre.rows.map((x) => x.riskId));
+  assert.ok((await store.load('Risks')).some((x) => x.Risk_ID === pre.rows[0].riskId));
+  await assert.rejects(rt.run('apiImportLegacy', [url, '2026', true], { email: 'editor@co.th' }), /ADMIN|สิทธิ์/);
+});

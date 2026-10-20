@@ -46,6 +46,7 @@
 | R11 | Exiting control แยกเป็น Preventive / Detective / Corrective (เก็บรวมในช่องเดียว รองรับหัวข้อภาษาไทย) | `parseControls_`, `joinControls_` | logic: "parseControls_ / joinControls_…" |
 | R12 | ปิดความเสี่ยงได้ (ไม่ลบ) — ข้อมูลยังดูได้ในตัวกรอง "ปิดแล้ว" และไม่นับใน Dashboard | `apiSetRiskStatus`, `computeDashboard_` | dashboard: "…ไม่นับ Risk ที่ปิด/งวดอื่น" |
 | R13 | การแก้ไขทุกครั้งเพิ่ม Version และบันทึก Audit_Log (ก่อน/หลัง) | `apiSaveRisk`, `Db.audit` | cloud: "บันทึก Risk ใหม่…" |
+| R14 | นำเข้า Risk Register จากลิงก์ Google Sheet (ADMIN): **ตรวจสอบก่อน** — แสดงว่าแต่ละแถวจะไปแผนก/งวดไหน, แถวที่ข้าม (Risk ID มีแล้ว/ซ้ำในไฟล์), แผนกที่จะสร้างใหม่ และข้อควรตรวจ — ยังไม่บันทึกจนกดยืนยัน; Risk ID ที่มีอยู่แล้วไม่ถูกเขียนทับ | `planLegacyImport_`, `importLegacyRegister_` (`src/Migration.gs`) | logic: "planLegacyImport_…"; flows: "นำเข้าจาก Google Sheet…" |
 
 ## 4. การให้คะแนนและระดับความเสี่ยง
 

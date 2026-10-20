@@ -194,60 +194,109 @@ function legacyRowToRisk_(r) {
   };
 }
 
-function importLegacyRegister_(sheetId, defaultPeriod, email) {
-  var src = SpreadsheetApp.openById(sheetId).getSheetByName('RISK_REGISTER');
+/**
+ * วางแผนการนำเข้า (pure, มี unit test) — ใช้ทั้งตอนตรวจสอบ (preview) และตอนนำเข้าจริง
+ * values = แถวข้อมูลของชีต RISK_REGISTER (ไม่รวมหัวตาราง)
+ * ctx = { depts, riskIds, kriIds, taxonomy, defaultPeriod, email, now }
+ * แถวที่ Risk ID มีอยู่แล้วจะถูกข้าม (ไม่เขียนทับ); ปัญหาในแถวเป็นคำเตือน ไม่ห้ามนำเข้า
+ */
+function planLegacyImport_(values, ctx) {
+  var depts = (ctx.depts || []).slice();
+  var codes = depts.map(function (d) { return str_(d.Dept_Code).toUpperCase(); });
+  var norm = function (s) { return str_(s).toUpperCase().replace(/&AMP;/g, '&').replace(/[^A-Z0-9ก-๙]/g, ''); };
+  var findDept = function (bu) {
+    var key = norm(bu);
+    var d = depts.filter(function (x) { return norm(x.Dept_Code) === key || norm(x.Dept_Name) === key; })[0];
+    return d ? str_(d.Dept_Code).toUpperCase() : null;
+  };
+  var existingIds = {};
+  (ctx.riskIds || []).forEach(function (id) { existingIds[id] = true; });
+  var riskIds = (ctx.riskIds || []).slice(), kriIds = (ctx.kriIds || []).slice();
+  var seenInFile = {};
+  var taxonomy = ctx.taxonomy || [];
+  var canon = typeCanon_(taxonomy);
+  var newDepts = [], risks = [], kris = [], rows = [], skipped = 0, empty = 0;
+  var targets = {};
+  (values || []).forEach(function (row, idx) {
+    if (!row || row.every(function (c) { return c === '' || c === null || c === undefined; })) return;
+    var x = legacyRowToRisk_(row);
+    x.risk.Risk_Type = canonType_(x.risk.Risk_Type, canon);
+    var info = { row: idx + 2, riskId: x.riskId, dept: '', deptName: str_(x.businessUnit), period: x.period || ctx.defaultPeriod,
+      type: x.risk.Risk_Type, subtype: x.risk.Risk_Subtype, scenario: str_(x.risk.Risk_Scenario).slice(0, 160), kriCount: 0, action: 'new', problems: [] };
+    rows.push(info);
+    if (!x.risk.Risk_Scenario) { info.action = 'empty'; info.problems.push('ไม่มี Risk Scenario — ข้ามแถวนี้'); empty++; return; }
+    if (x.riskId && seenInFile[x.riskId]) { info.action = 'skip'; info.problems.push('Risk ID ซ้ำกับแถว ' + seenInFile[x.riskId] + ' ในไฟล์เดียวกัน'); skipped++; return; }
+    if (x.riskId) seenInFile[x.riskId] = info.row;
+    if (x.riskId && existingIds[x.riskId]) { info.action = 'skip'; info.problems.push('มี Risk ID นี้ในระบบแล้ว — ไม่เขียนทับ'); skipped++; return; }
+    var bu = x.businessUnit || 'UNASSIGNED';
+    var code = findDept(bu);
+    if (!code) {
+      code = deptCodeFromName_(bu, codes);
+      codes.push(code);
+      var nd = { Dept_Code: code, Dept_Name: bu, Approver_Email: '', Is_Active: 'TRUE' };
+      depts.push(nd); newDepts.push(nd);
+      info.problems.push('ไม่พบแผนก "' + bu + '" — จะสร้างแผนกใหม่รหัส ' + code);
+    }
+    info.dept = code;
+    info.deptName = str_((depts.filter(function (d) { return str_(d.Dept_Code).toUpperCase() === code; })[0] || {}).Dept_Name) || bu;
+    var id = x.riskId || nextRiskId_(code, riskIds);
+    riskIds.push(id);
+    info.riskId = id;
+    var r = x.risk;
+    r.Risk_ID = id;
+    r.Risk_No = num_(x.legacyNo) || nextSeqId_(code + '-R-', riskIds.slice(0, -1));
+    r.Assessment_Period = info.period;
+    r.Business_Unit = code;
+    r.Status = 'Active'; r.Version = 1;
+    r.Created_By = ctx.email; r.Created_At = ctx.now; r.Updated_By = ctx.email; r.Updated_At = ctx.now;
+    validateRisk_(r, [], taxonomy, '').errors.forEach(function (e) { info.problems.push(e); });
+    risks.push(r);
+    [['Leading', x.leading], ['Lagging', x.lagging]].forEach(function (p) {
+      if (!p[1]) return;
+      var kid = nextKriId_(id, kriIds);
+      kriIds.push(kid);
+      info.kriCount++;
+      kris.push({ KRI_ID: kid, Risk_ID: id, KRI_Type: p[0], KRI_Name: p[1], Unit: '', Frequency: 'Monthly', Direction: 'Qualitative',
+        Amber_Threshold: '', Red_Threshold: '', Green_Text: x.green, Amber_Text: x.amber, Red_Text: x.red, Owner_Email: '', Is_Active: 'TRUE' });
+    });
+    var tk = code + '|' + info.period;
+    if (!targets[tk]) targets[tk] = { dept: code, deptName: info.deptName, period: info.period, count: 0 };
+    targets[tk].count++;
+  });
+  return { risks: risks, kris: kris, newDepts: newDepts, skipped: skipped, empty: empty, rows: rows,
+    byTarget: Object.keys(targets).map(function (k) { return targets[k]; }) };
+}
+
+/** นำเข้า Risk Register จากชีต RISK_REGISTER ของไฟล์ที่ระบุ — dryRun = ตรวจสอบอย่างเดียว ไม่บันทึก */
+function importLegacyRegister_(sheetId, defaultPeriod, email, dryRun) {
+  var src;
+  try {
+    src = SpreadsheetApp.openById(sheetId).getSheetByName('RISK_REGISTER');
+  } catch (e) {
+    if (e && (e.message === 'NEED_ASYNC' || /^เปิดไฟล์ไม่ได้/.test(e.message))) throw e;
+    throw new Error('เปิดไฟล์ไม่ได้ — ตรวจลิงก์ และให้บัญชีที่ deploy ระบบเปิดไฟล์นี้ได้ (' + e.message + ')');
+  }
   if (!src) throw new Error('ไม่พบชีต RISK_REGISTER ในไฟล์ต้นทาง');
   var values = src.getDataRange().getValues().slice(1);
-  return Db.withLock(function () {
-    var depts = Db.readAll('Departments');
-    var codes = depts.map(function (d) { return str_(d.Dept_Code).toUpperCase(); });
-    var norm = function (s) { return str_(s).toUpperCase().replace(/&AMP;/g, '&').replace(/[^A-Z0-9ก-๙]/g, ''); };
-    var findDept = function (bu) {
-      var key = norm(bu);
-      var d = depts.filter(function (x) { return norm(x.Dept_Code) === key || norm(x.Dept_Name) === key; })[0];
-      return d ? str_(d.Dept_Code).toUpperCase() : null;
-    };
-    var riskIds = Db.readAll('Risks').map(function (r) { return r.Risk_ID; });
-    var kriIds = Db.readAll('KRIs').map(function (k) { return k.KRI_ID; });
-    var newDepts = [], risks = [], kris = [], skipped = 0;
-    var now = Db.now();
-    var canon = typeCanon_(Db.readAll('Taxonomy'));
-    values.forEach(function (row) {
-      var x = legacyRowToRisk_(row);
-      x.risk.Risk_Type = canonType_(x.risk.Risk_Type, canon);
-      if (!x.risk.Risk_Scenario) return;
-      var bu = x.businessUnit || 'UNASSIGNED';
-      var code = findDept(bu);
-      if (!code) {
-        code = deptCodeFromName_(bu, codes);
-        codes.push(code);
-        var nd = { Dept_Code: code, Dept_Name: bu, Approver_Email: '', Is_Active: 'TRUE' };
-        depts.push(nd); newDepts.push(nd);
-      }
-      if (x.riskId && riskIds.indexOf(x.riskId) >= 0) { skipped++; return; }
-      var id = x.riskId || nextRiskId_(code, riskIds);
-      riskIds.push(id);
-      var r = x.risk;
-      r.Risk_ID = id;
-      r.Risk_No = num_(x.legacyNo) || nextSeqId_(code + '-R-', riskIds.slice(0, -1));
-      r.Assessment_Period = x.period || defaultPeriod;
-      r.Business_Unit = code;
-      r.Status = 'Active'; r.Version = 1;
-      r.Created_By = email; r.Created_At = now; r.Updated_By = email; r.Updated_At = now;
-      risks.push(r);
-      [['Leading', x.leading], ['Lagging', x.lagging]].forEach(function (p) {
-        if (!p[1]) return;
-        var kid = nextKriId_(id, kriIds);
-        kriIds.push(kid);
-        kris.push({ KRI_ID: kid, Risk_ID: id, KRI_Type: p[0], KRI_Name: p[1], Unit: '', Frequency: 'Monthly', Direction: 'Qualitative',
-          Amber_Threshold: '', Red_Threshold: '', Green_Text: x.green, Amber_Text: x.amber, Red_Text: x.red, Owner_Email: '', Is_Active: 'TRUE' });
-      });
+  function plan() {
+    return planLegacyImport_(values, {
+      depts: Db.readAll('Departments'), riskIds: Db.readAll('Risks').map(function (r) { return r.Risk_ID; }),
+      kriIds: Db.readAll('KRIs').map(function (k) { return k.KRI_ID; }), taxonomy: Db.readAll('Taxonomy'),
+      defaultPeriod: defaultPeriod, email: email, now: Db.now()
     });
-    Db.append('Departments', newDepts);
-    Db.append('Risks', risks);
-    Db.append('KRIs', kris);
-    Db.audit(email, 'IMPORT', 'Legacy', sheetId, null, { risks: risks.length, kris: kris.length, depts: newDepts.length, skipped: skipped });
-    return { risks: risks.length, kris: kris.length, deptsCreated: newDepts.map(function (d) { return d.Dept_Code + ' = ' + d.Dept_Name; }), skipped: skipped,
+  }
+  function summary(p, done) {
+    return { dryRun: !done, risks: p.risks.length, kris: p.kris.length, skipped: p.skipped, empty: p.empty,
+      deptsCreated: p.newDepts.map(function (d) { return d.Dept_Code + ' = ' + d.Dept_Name; }), byTarget: p.byTarget, rows: p.rows,
       note: 'KRI ที่นำเข้าเป็นแบบ Qualitative — แก้เป็นตัวเลข + ตั้ง Amber/Red ในฟอร์ม Risk เพื่อให้ระบบคำนวณสถานะเอง' };
+  }
+  if (dryRun) return summary(plan(), false);
+  return Db.withLock(function () {
+    var p = plan();
+    Db.append('Departments', p.newDepts);
+    Db.append('Risks', p.risks);
+    Db.append('KRIs', p.kris);
+    Db.audit(email, 'IMPORT', 'Legacy', sheetId, null, { risks: p.risks.length, kris: p.kris.length, depts: p.newDepts.length, skipped: p.skipped });
+    return summary(p, true);
   });
 }
